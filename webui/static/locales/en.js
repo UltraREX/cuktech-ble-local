@@ -1,0 +1,355 @@
+/*!
+ * en locale pack for the CUKTECH BLE web UI.
+ * Natural, idiomatic English translations (no Chinglish).
+ */
+(function (global) {
+    'use strict';
+    global.I18N_RESOURCES = global.I18N_RESOURCES || {};
+    global.I18N_RESOURCES['en'] = {
+        // ── Common ──
+        common: {
+            initPartial: 'Some UI parts failed to load - please refresh',
+            connect: 'Connect',
+            disconnect: 'Disconnect',
+            close: 'Close',
+            cancel: 'Cancel',
+            set: 'Set',
+            clear: 'Clear',
+            clearing: 'Clearing...',
+            setting: 'Setting...',
+            saving: 'Saving...',
+            notSet: 'Not set',
+            loading: 'Loading...',
+            connected: 'Connected',
+            connectingDots: 'Connecting...',
+            disconnecting: 'Disconnecting...',
+            disconnected: 'Not connected',
+            unknownError: 'Unknown error',
+            networkError: 'Network error: {{msg}}',
+            saveFailed: 'Save failed: {{msg}}',
+            setFailed: 'Failed to set: {{msg}}',
+            firmware: 'Firmware: {{version}}',
+            theme: 'Theme',
+            minutes: { one: '1 min', other: '{{count}} min' },
+            hours: { one: '1 h', other: '{{count}} h' },
+            hoursMinutes: '{{h}} h {{m}} min'
+        },
+
+        // ── Power units ──
+        power: {
+            total: 'Total Power (W)'
+        },
+
+        // ── Index page ──
+        index: {
+            powerChart: 'Power Chart',
+            chargeHistory: 'Charge History',
+            deviceSettings: 'Device Settings',
+            config: 'Config',
+            themeDark: 'Dark',
+            themeLight: 'Light',
+            themeSystem: 'System',
+            range30: '30m',
+            range60: '60m',
+            range120: '120m',
+            range1440: '24h',
+            metricPower: 'Power',
+            metricVoltage: 'Voltage',
+            metricCurrent: 'Current',
+            metricTotal: 'Total power',
+            chartAria: 'Power chart: per-port power over time',
+            chartAriaMetric: '{{metric}} chart: per-port values over time',
+            loadBasis: 'Load bar is relative to this port\'s {{max}} W limit'
+        },
+
+        // ── Scene modes (device) ──
+        scene: {
+            ai: 'AI Mode',
+            eco: 'Digital Ecosystem',
+            single: 'Single Port',
+            balanced: 'Balanced Mode',
+            descAi: 'Automatically detects the connected device and picks the optimal charging power',
+            descEco: 'Charges multiple ports at once with balanced power distribution',
+            descSingle: 'Maximum power output from a single port, prioritizing C1',
+            descBalanced: 'Balances charging power across all ports'
+        },
+
+        // ── Device settings (PIID config) ──
+        settings: {
+            sceneMode: 'Scene Mode',
+            screenTimeout: 'Screen-Off Time',
+            deviceLanguage: 'Language',
+            usbATrickle: 'USB-A Trickle Charge',
+            idleScreenOff: 'Idle Screen-Off',
+            screenLock: 'Screen Orientation Lock',
+            off: 'Off',
+            on: 'On',
+            min5: '5 min',
+            min10: '10 min',
+            min30: '30 min',
+            alwaysOn: 'Always On',
+            min1: '1 min'
+        },
+
+        // ── Port detail modal ──
+        modal: {
+            portDetail: '{{port}} Port Details',
+            voltage: 'Voltage (V)',
+            current: 'Current (A)',
+            power: 'Power (W)',
+            protocol: 'Live Protocol',
+            realtime: '⚡ Live',
+            realtimeStop: '⏹ Live',
+            protocolSwitch: 'Protocol Toggle',
+            noData: 'Protocol Toggle — no data',
+            ppsNote: 'PPS is also disabled when PD is off',
+            replugNote: 'Replug the port to apply'
+        },
+
+        // ── Connection quality tooltips ──
+        quality: {
+            connectionDuration: 'Connection time',
+            lastPush: 'Last push',
+            nextReconnect: 'Next reconnect',
+            decryptSuccess: 'Decrypt success',
+            notifyResponse: 'Notify response',
+            connectionStable: 'Stability',
+            reconnect5m: 'Reconnects (5m)',
+            notConnected: 'Not connected',
+            none: 'None',
+            secondsAgo: '{{count}}s ago',
+            secondsLater: 'in {{count}}s',
+            times: '{{count}}×'
+        },
+
+        // ── Countdown ──
+        countdown: {
+            title: 'Countdown',
+            hourUnit: 'h',
+            minuteUnit: 'min',
+            quick: '{{count}}m',
+            quickHours: '{{count}}h'
+        },
+
+        // ── Charge limit (auto power-off at a set Wh) ──
+        chargeLimit: {
+            title: 'Charge Limit',
+            hint: 'Energy is the charger output (Wh), not what the device actually absorbs (cable/conversion losses)',
+            unit: 'Wh',
+            placeholder: 'Wh',
+            off: 'Off',
+            enabled: 'Enabled',
+            used: 'Charged {{used}} Wh',
+            once: 'Once',
+            always: 'Always',
+            fired: 'Triggered',
+            progress: '{{used}} / {{total}} Wh',
+            set: 'Set',
+            clear: 'Clear',
+            saved: 'Charge limit saved',
+            modeSaved: 'Mode saved',
+            cleared: 'Charge limit cleared',
+            saveFailed: 'Failed: {{msg}}',
+            // Two compact switches: card shows only these words, details in title
+            permanent: 'Always-on',
+            permanentHint: 'Always-on: no curve recorded, never auto-cut',
+            permanentOff: 'Click to turn always-on off',
+            permanentConfirm: 'Tap again',
+            permanentClearsLimit: 'Always-on clears this port\'s charge limit - tap again to confirm',
+            permanentAvg: 'Average power',
+            permanentAvgLast: 'Last average power',
+            permanentOut: 'This session',
+            permanentLastOut: 'Last session',
+            permanentNoOutput: 'No output yet',
+            permanentDurLabel: 'Duration',
+            permanentDurMin: '{{m}} min',
+            permanentDurHour: '{{h}} h {{m}} min',
+            permanentDurDay: '{{d}} d {{h}} h',
+            permanentDurDayOnly: '{{d}} d',
+            permanentNote: 'No curve recorded; energy stats still tracked',
+            fullOff: 'Auto',
+            fullOffHint: 'Switch this port off automatically once charging completes',
+            fullOffFired: 'Cut off after full',
+            permanentConflict: 'Not applicable to an always-on port'
+        },
+
+        // ── Charge history ──
+        charge: {
+            today: 'Today',
+            yesterday: 'Yesterday',
+            // Backend treats week/month as rolling 7/30-day windows (history._period_window),
+            // not calendar week/month — the label has to say so.
+            week: 'Last 7 days',
+            month: 'Last 30 days',
+            all: 'All',
+            export: 'Export CSV',
+            totalWh: 'Total Energy (Wh)',
+            sessionCount: 'Sessions',
+            avgPower: 'Avg Power (W)',
+            peakPower: 'Peak Power (W)',
+            noRecords: 'No charge records yet',
+            energy: 'Energy: {{wh}} Wh',
+            powerTooltip: 'Power: {{power}} W',
+            protocolTooltip: 'Protocol: {{protocol}}',
+            prevPage: 'Prev',
+            nextPage: 'Next',
+            accuracy: 'Precision',
+            allPoints: 'All',
+            points100: '100 pts',
+            points200: '200 pts',
+            points300: '300 pts',
+            points600: '600 pts',
+            energyUnit: 'Energy (Wh)',
+            avgPowerUnit: 'Avg Power (W)',
+            peakPowerUnit: 'Peak Power (W)',
+            avgVoltageUnit: 'Avg Voltage (V)',
+            avgCurrentUnit: 'Avg Current (A)',
+            yesterdayTime: 'Yesterday {{time}}',
+            // Always-on (permanent power) rows + the sliding window in the detail sheet
+            permanentWindow: 'Always-on',
+            noCurve: 'No curve for this session, stats only'
+        },
+
+        // ── Energy overview card ──
+        energy: {
+            title: 'Energy Overview',
+            tabPorts: 'By port',
+            tabHourly: 'Hourly',
+            tabProtocols: 'Protocols',
+            total: '{{period}} · {{wh}} Wh total',
+            count: '{{count}}×',
+            unknown: 'Unknown',
+            noData: 'No data for this period',
+            hourlyAria: 'Hourly energy consumption over the last 24 hours'
+        },
+
+        // ── Phone page ──
+        phone: {
+            sceneMode: 'Scene Mode',
+            portControl: 'Port Control',
+            screenTimeout: 'Screen-Off Time',
+            usbATrickle: 'USB-A Trickle Charge',
+            totalPowerTitle: 'Current Total Power',
+            currentPower: 'Current Power',
+            powerChart: 'Power Chart',
+            powerDist: 'Power Distribution',
+            chargeHistory: 'Charge History',
+            delayOff: 'Delay Off',
+            noActivePorts: 'No active ports',
+            connectToast: 'Connecting to the device, please wait...',
+            replugNote: 'Replug the port to apply'
+        },
+
+        // ── Config page ──
+        config: {
+            title: 'System Config',
+            xiaomiAuto: 'Get from Xiaomi Cloud',
+            mac: 'MAC Address',
+            macHint: 'Charger BLE MAC address',
+            tokenHint: 'Device auth Token (hex)',
+            bleKeyHint: 'Encryption key (hex)',
+            serverSection: 'Server',
+            webPort: 'Web Port',
+            retention: 'Data retention (days)',
+            webLanguage: 'Interface Language',
+            webLanguageHint: 'Applies immediately, no restart needed; all pages stay in sync',
+            langAuto: 'Follow System',
+            langApplied: 'Language switched',
+            langAutoApplied: 'Now following the system language',
+            sessionRecording: 'Charge Session Recording',
+            sessionRecordingHint: 'Takes effect immediately, no restart needed; history stops being recorded when off',
+            logLevel: 'Log Level',
+            logLevelHint: 'Takes effect immediately, no restart needed; error is quietest, debug most verbose',
+            logLevelSet: 'Log level set to {{level}}',
+            currentStatus: 'Status',
+            loaded: 'Config loaded',
+            loadFailed: 'Failed to load: {{msg}}',
+            saveRestart: 'Save & Restart',
+            savedRestart: 'Config saved, service is restarting...',
+            sessionRecordingOn: 'Charge session recording enabled',
+            sessionRecordingOff: 'Charge session recording disabled',
+            xiaomiLogin: 'Xiaomi Cloud Login',
+            serverRegion: 'Server Region',
+            regionCn: 'Mainland China (cn)',
+            regionDe: 'Europe (de)',
+            regionUs: 'United States (us)',
+            regionRu: 'Russia (ru)',
+            regionTw: 'Taiwan (tw)',
+            regionSg: 'Singapore (sg)',
+            regionIn: 'India (in)',
+            getQR: 'Get QR Code',
+            fetching: 'Fetching...',
+            connectingXiaomi: 'Connecting to Xiaomi Cloud...',
+            qrFailed: 'Failed to get QR code',
+            qrLoadFailed: 'Failed to load QR code',
+            waitingScan: 'Waiting for scan...',
+            scanInstruction: 'Scan the QR code with the Mi Home app to log in',
+            scanWithApp: 'Scan the QR code below with the <strong style="color:#333;">Mi Home App</strong>',
+            orOpenLink: 'Or copy the link and open it in your browser:',
+            scanned: "I've scanned the code",
+            scanTimeout: 'Timed out waiting — please get a new QR code',
+            noDevices: 'No devices found',
+            selectCharger: 'Select chargers (multiple allowed):',
+            fetchingBleKey: 'Fetching BLE Key...',
+            bleKeyFailed: 'Failed to get BLE Key: {{msg}}',
+            xiaomiSelectAll: 'Select all',
+            xiaomiSelectNone: 'Clear',
+            xiaomiSyncNames: 'Sync names from Xiaomi Cloud',
+            xiaomiSyncNamesHint: 'Overwrite the names already on the device cards with the ones from the cloud',
+            xiaomiConfigured: 'Configured',
+            xiaomiImport: 'Import {{n}} selected',
+            xiaomiImportEmpty: 'Select at least one device',
+            xiaomiImporting: 'Importing...',
+            xiaomiImportDone: 'Filled into the device cards: {{added}} added, {{updated}} updated. Remember to hit "Save & Restart"',
+            xiaomiImportDoneWithFailed: 'Filled into the device cards: {{added}} added, {{updated}} updated, {{failed}} failed. Remember to hit "Save & Restart"',
+            xiaomiImportFailed: 'Import failed',
+
+            // ── Multi-device management (device card list) ──
+            devicesSection: 'Chargers',
+            // Multi-device is Beta until the two-charger hardware canary passes
+            multiDeviceBeta: 'Beta',
+            devicesHint: 'One host can drive several chargers at once; changes apply after a restart',
+            addDevice: 'Add charger',
+            editDevice: 'Edit',
+            removeDevice: 'Remove',
+            primaryTag: 'Primary',
+            primaryUndeletable: 'The primary charger comes from the ble: section of the config file and cannot be removed',
+            deviceName: 'Name',
+            deviceNameHint: 'Shown in the UI; leave empty to use the device ID',
+            deviceId: 'Device ID',
+            deviceIdHint: 'Unique ID for this charger; lowercase letters/digits/_- and must not start with a symbol',
+            confirmRemoveDevice: 'Remove charger "{{name}}"? It takes effect after saving and restarting.',
+            invalidDeviceId: '"{{name}}" has an invalid device ID: lowercase letters, digits, _ and - only, and it must start with a letter or digit',
+            needMacToken: '"{{name}}" is missing a MAC or token',
+            deviceAdded: 'Charger added — fill in the MAC / token, then save'
+        },
+
+        // ── Device switcher（多设备共用，index.html / phone.html）──
+        device: {
+            switcher: 'Switch device',
+            // ── multi-device bench (device-bench.js) ──
+            all: 'All',
+            unnamedDevice: 'Unnamed device',
+            primaryName: 'Main charger',
+            // 桌面牌堆上那张卡既可拖动翻牌，也可单击打开这台设备的设置。
+            cardHint: 'Open this device\'s settings',
+            allHint: 'Show all devices',
+            // 翻牌箭头的读屏文案（界面上不出现文字，只出现箭头）
+            prev: 'Previous device',
+            next: 'Next device',
+            onlineCount: '{{online}}/{{total}} online',
+            fleetTitle: 'All chargers',
+            fleetNow: 'Live',
+            fleetOnline: 'Online',
+            fleetToday: 'Today',
+            todayWh: '{{wh}} Wh today'
+        },
+
+        // ── Page titles ──
+        pageTitle: {
+            index: 'CUKTECH 10 GaN Charger Ultra',
+            phone: 'CUKTECH 10 Ultra Charger',
+            config: 'CUKTECH Config'
+        }
+    };
+})(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));

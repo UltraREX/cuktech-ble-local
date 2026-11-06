@@ -1,0 +1,864 @@
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+    --c1: #46B4FF; --c2: #FF7A00; --c3: #89D8F3; --a: #FFD24B;
+    --bg: #121215; --card-bg: #000; --card-border: rgba(137, 246, 243, 0.5);
+    --pval-color: #FFF;
+    --text: rgba(255,255,255,0.9); --text-dim: rgba(255,255,255,0.4);
+    --text-sub: rgba(255,255,255,0.6);
+    --page-width: 430px;
+    /* 充电量限额卡片端口色：两套主题共用这同一批值（浅色不覆盖）。
+       这些是亮色，作白底小字只有 1.44～2.6:1，因此卡片里颜色一律作为
+       "填充"使用（实底按钮 + 深色字），文字色走 --text/--text-dim。 */
+    --limit-c1: #FF7A00; --limit-c1-rgb: 255, 122, 0;
+    --limit-c2: #46B4FF; --limit-c2-rgb: 70, 180, 255;
+    --limit-c3: #89D8F3; --limit-c3-rgb: 137, 216, 243;
+    --limit-a:  #FFD24B; --limit-a-rgb:  255, 210, 75;
+    --limit-danger: #FF6B60; --limit-danger-rgb: 255, 107, 96;
+    /* 进度槽：浅色主题要更深，亮色填充才看得出填到哪儿（见 body.light） */
+    --limit-track: rgba(128, 128, 128, 0.2);
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Noto Sans SC', 'MiSans', sans-serif;
+    background: #0a0a0f; display: flex; justify-content: center;
+    min-height: 100vh; overflow-x: hidden;
+}
+
+body.light {
+    --bg: #f0f0f5; --card-bg: #fff; --card-border: rgba(0,0,0,0.1);
+    --text: #1a1a1a; --text-dim: #888; --text-sub: #666;
+    --pval-color: #000;
+    /* 端口色本身不覆盖（和暗色主题完全是同一批亮色）。
+       进度槽用浅灰（与桌面 index.css 浅色主题的 --track 同值）：产品侧明确要求
+       浅色下不要出现深灰长条。代价是亮端口色填充对浅槽只有 1.3～2.1:1，
+       低于 WCAG 图形件的 3:1——这条偏离在 charge_limit_contrast_test.js 里
+       以"记录现状"的方式固定下来，改回深槽前先看那段说明。 */
+    --limit-track: rgba(0, 0, 0, 0.10);
+}
+
+.phone {
+    width: 100%; max-width: var(--page-width); min-height: 100vh;
+    background: var(--bg); position: relative;
+    padding-top: 48px; padding-bottom: 80px;
+}
+
+/* ── Top Navigation ── */
+.navbar {
+    display: flex; align-items: center; padding: 8px 16px;
+    height: 48px; position: fixed; top: 0; left: 0; right: 0; z-index: 102;
+    background: var(--bg); transition: opacity 0.3s ease;
+    max-width: var(--page-width); margin: 0 auto;
+    border-radius: 0 0 18px 18px;
+}
+.navbar.hide { opacity: 0; pointer-events: none; }
+.navbar.hide .theme-btn { pointer-events: auto; }
+.nav-back { width: 36px; height: 36px; padding: 6px; cursor: pointer; }
+.nav-back img { width: 100%; height: 100%; opacity: 0.7; }
+.nav-title { flex: 1; text-align: center; font-size: 16px; font-weight: 500;
+    color: var(--text); }
+/* 注意：这里**不能**给 margin-right。导航栏左边是 28px 的齿轮、右边是 28px 的主题
+   按钮，本来左右对称；多留 36px 会让标题整块左偏，两边的白边就不一样长了
+   （那 36px 是给早年的 .nav-more 让位的，那个按钮早就不在页面里）。 */
+.theme-btn { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+.nav-more { width: 28px; height: 28px; cursor: pointer; padding: 4px; display: none; }
+.nav-more img { width: 100%; height: 100%; opacity: 0.5; }
+
+/* 设备切换在手机上只剩两处：导航栏标题（点开下拉列表，见下）与"全部设备"页。
+   原来那条吸顶 pill 条 / 横滑仪表条都已撤掉 —— 它们各自要吃掉 42–58px 的顶部
+   留白，而这信息现在就在标题栏里。 */
+
+/* ── Top View (sticky) ── */
+.top-view {
+    width: 100%; height: 304px; position: sticky; top: 48px;
+    display: flex; flex-direction: column;
+}
+.imagebg {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    width: 100%; height: 100%; transition: opacity 0.05s linear;
+}
+/* Bottom view: small gap from sticky top-view, scrolls up behind it naturally */
+.bottom-view {
+    position: relative; z-index: 5;
+    background: var(--bg);
+    border-radius: 26px 26px 0 0;
+    min-height: 100vh;
+}
+
+.top-spacer { flex: 10; }
+
+/* ── Device Image Container ── */
+.imagebg {
+    width: calc(100% - 54px); height: 260px; margin: 30px auto 0;
+    position: relative; overflow: visible;
+}
+
+/* Dark glow behind device when connected */
+.dark-glow {
+    position: absolute; width: 260px; height: 260px;
+    left: 50%; top: 50%; transform: translate(-50%, -50%);
+    border-radius: 50%; opacity: 0; transition: opacity 0.6s ease;
+    z-index: 0; pointer-events: none;
+    background: radial-gradient(circle, rgba(70,180,255,0.15) 0%, rgba(70,180,255,0.05) 40%, transparent 70%);
+}
+.dark-glow.active { opacity: 1; }
+
+/* Unconnected placeholder */
+.unconnected-img {
+    width: 360px; height: 307px; object-fit: contain;
+    margin: 0 auto; display: block; z-index: 2; position: relative;
+}
+.unconnected-img.hidden { display: none; }
+
+/* Device image */
+.device-container {
+    position: relative; width: 360px; height: 481px;
+    margin: 0 auto; display: none; z-index: 1; overflow: visible;
+}
+.device-container.show { display: block; }
+.device-container.charging {
+    animation: deviceFloat 3s ease-in-out infinite;
+}
+.device-img {
+    width: 360px; height: 481px; object-fit: contain;
+    position: absolute; top: -128px; left: 0; z-index: 0;
+}
+@keyframes deviceFloat {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-4px); }
+}
+
+/* ── Header Scene Mode Badge (on top of device image) ── */
+.scene-badge {
+    position: absolute; top: -40px; left: 50%; transform: translateX(-50%);
+    height: 30px; z-index: 5;
+    display: none; align-items: center; justify-content: center;
+}
+.scene-badge.show { display: flex; }
+.scene-badge img { width: 20px; height: 20px; margin-right: 4px; }
+.scene-badge span { font-size: 12px; color: var(--pval-color); }
+
+/* ── USB Port Power Overlay ── */
+.usb-overlay { position: relative; width: 360px; margin-left: 134.5px; z-index: 3; pointer-events: none; }
+.usb-module { position: absolute; left: 0; width: 360px; display: none; }
+.usb-module.active { display: block; }
+.usb-protocol-icon { position: absolute; width: 25px; height: 16px; left: 62px; z-index: 4; }
+.usb-protocol-icon img { width: 100%; height: 100%; object-fit: contain; }
+.usb-power-bg { position: absolute; z-index: 3; }
+.usb-power-bg img { height: 100%; object-fit: contain; }
+.usb-power-val {
+    position: absolute; z-index: 4; color: var(--pval-color); font-size: 17px;
+    font-weight: bold; text-align: center; width: 70px;
+}
+
+/* Bottom spacer */
+.bottom-spacer { flex: 2; }
+
+/* ── Bottom Scroll Area ── */
+.bottom-view { padding: 0 16px; }
+
+/* ── Card Container ── */
+.card {
+    width: 100%; background: var(--card-bg); border-radius: 12px;
+    margin-top: 12px; padding: 18px 20px 24px;
+    border: 1px solid var(--card-border);
+    margin-left: auto; margin-right: auto;
+}
+
+/* ── Scene Mode Card ── */
+.scene-card { margin-top: 8px; }
+.scene-card-header { display: flex; align-items: center; margin-bottom: 25px; }
+.scene-card-title { font-size: 17px; color: var(--text-dim); }
+.scene-separator { width: 1px; height: 14px; background: rgba(255,255,255,0.15); margin: 0 8px; }
+.scene-card-subtitle { font-size: 17px; color: var(--text); }
+.scene-card-flex { flex: 1; }
+.scene-card-arrow { width: 20px; height: 20px; cursor: pointer; display: none; }
+.scene-card-arrow.show { display: block; }
+.scene-card-arrow img { width: 100%; height: 100%; opacity: 0.6; }
+
+.scene-buttons {
+    display: flex; justify-content: space-between; margin-top: 0;
+}
+.scene-btn {
+    display: flex; flex-direction: column; align-items: center;
+    cursor: pointer; border: none; background: none; padding: 0;
+}
+.scene-btn img { width: 80px; height: 80px; object-fit: cover; transition: transform 0.2s; }
+.scene-btn:active img { transform: scale(0.95); }
+.scene-btn .scene-label {
+    font-size: 13px; color: var(--text-sub); margin-top: 4px;
+}
+.scene-btn.active .scene-label { color: var(--text); font-weight: 500; }
+
+/* ── Port Control Card ── */
+.port-ctl-card { margin-top: 12px; }
+.port-ctl-title { font-size: 17px; color: var(--text-dim); margin-bottom: 18px; }
+.port-ctl-items { display: flex; flex-wrap: wrap; gap: 10px; }
+.port-ctl-item { flex: 1; min-width: 130px; padding: 6px 0; }
+.port-ctl-item-top { display: flex; align-items: center; justify-content: space-between; }
+.port-protos { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; padding: 6px 8px; background: rgba(255,255,255,0.03); border-radius: 8px; }
+.port-ctl-port-icon { width: 32px; height: 20px; }
+.port-ctl-port-icon img { width: 100%; height: 100%; object-fit: contain; }
+body.light .port-ctl-port-icon img { filter: invert(1); }
+.port-ctl-label { font-size: 14px; color: var(--text); margin-left: 8px; flex: 1; }
+
+/* Toggle Switch */
+.toggle { position: relative; width: 51px; height: 31px; cursor: pointer; }
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggle-slider {
+    position: absolute; inset: 0; border-radius: 31px;
+    background: rgba(120,120,128,0.32); transition: 0.3s;
+}
+.toggle-slider::before {
+    content: ''; position: absolute; width: 27px; height: 27px; top: 2px; left: 2px;
+    border-radius: 50%; background: #fff; transition: 0.3s;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+.toggle input:checked + .toggle-slider { background: #34C759; }
+.toggle input:checked + .toggle-slider::before { transform: translateX(20px); }
+
+/* ── Screen Setting Card ── */
+.screen-card { margin-top: 12px; }
+.screen-card-header { display: flex; align-items: center; justify-content: space-between; }
+.screen-card-title { font-size: 17px; color: var(--text-dim); }
+.screen-card-value { font-size: 15px; color: var(--text); cursor: pointer; }
+.screen-card-value img { width: 16px; height: 16px; margin-left: 4px; vertical-align: middle; opacity: 0.5; }
+
+/* ── USB-A Trickle Card ── */
+.trickle-card { margin-top: 12px; }
+
+/* ── Delay Slider ── */
+.delay-slider { width:100%; height:4px; -webkit-appearance:none; appearance:none; outline:none; cursor:pointer; border-radius:2px; margin:8px 0; }
+.delay-slider::-webkit-slider-thumb { -webkit-appearance:none; width:22px; height:22px; border-radius:50%; border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,0.3); cursor:pointer; }
+.delay-slider::-moz-range-thumb { width:22px; height:22px; border-radius:50%; border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,0.3); cursor:pointer; }
+
+/* ── Protocol Switch Buttons ── */
+.proto-btn { padding: 3px 8px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.04); color: var(--text-dim); font-size: 10px; cursor: pointer; transition: all 0.2s; }
+.proto-btn.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.proto-btn:active { transform: scale(0.96); }
+.proto-btn[disabled] { opacity: 0.3; cursor: not-allowed; }
+body.light .proto-btn { border-color: rgba(0,0,0,0.15); background: rgba(0,0,0,0.06); color: #000; }
+body.light .proto-btn.on { background: var(--accent); border-color: var(--accent); color: #000; }
+body.light .proto-btn:not(.on) { color: #888; }
+body.light .port-protos { background: rgba(0,0,0,0.03); }
+.trickle-card-header { display: flex; align-items: center; justify-content: space-between; }
+.trickle-card-title { font-size: 17px; color: var(--text-dim); }
+
+/* ── Rate / Power Card (big card) ── */
+.rate-card {
+    margin-top: 10px; border-radius: 26px;
+    padding: 0; overflow: hidden;
+}
+.rate-inner { padding: 30px 20px 24px; }
+
+/* Total Power Section */
+.total-power-title { font-size: 16px; font-weight: 500; color: var(--text); margin-bottom: 0; }
+.power-row { display: flex; align-items: center; height: 100px; }
+.power-left { flex: 1; padding-left: 0; }
+.power-value-row { display: flex; align-items: baseline; }
+.power-number { font-size: 28px; font-weight: 500; color: var(--text); line-height: 34px; }
+.power-unit { font-size: 10px; color: var(--text); margin-left: 2px; }
+.power-label { font-size: 12px; color: var(--text-dim); margin-top: 0; }
+
+/* Mini line chart placeholder */
+.mini-chart {
+    width: 200px; height: 100px; margin-left: 20px;
+    display: flex; align-items: flex-end; gap: 2px;
+}
+.mini-bar {
+    flex: 1; border-radius: 2px 2px 0 0; transition: height 0.5s ease;
+    background: #46B4FF;
+}
+
+/* Port Power List */
+.port-power-title { font-size: 17px; font-weight: 500; color: var(--text); margin-bottom: 16px; }
+.port-power-row { display: flex; align-items: baseline; margin-bottom: 6px; }
+.port-power-dot { width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; flex-shrink: 0; }
+.port-power-name { font-size: 14px; color: var(--text); min-width: 30px; }
+.port-power-w { font-size: 16px; font-weight: 500; color: var(--text); min-width: 55px; text-align: right; }
+.port-power-w-unit { font-size: 13px; color: var(--text); }
+.port-power-protocol { font-size: 13px; color: var(--text-dim); margin-left: 15px; }
+
+/* Full line chart placeholder */
+.full-chart-title { font-size: 16px; font-weight: 500; color: var(--text); margin-top: 18px; margin-bottom: 8px; }
+
+/* X axis */
+
+/* Legend */
+.chart-legend {
+    display: flex; justify-content: center; gap: 16px; margin-top: 8px;
+    font-size: 11px; color: var(--text-dim);
+}
+.chart-legend-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 4px; vertical-align: middle; }
+
+/* ── Sim Controls ── */
+.sim-ctrls {
+    position: fixed; bottom: 16px; right: 16px; z-index: 200;
+    display: flex; flex-direction: column; gap: 6px;
+}
+.sim-btn {
+    padding: 8px 14px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.15);
+    background: rgba(0,0,0,0.6); color: #fff; font-size: 11px;
+    cursor: pointer; backdrop-filter: blur(10px); transition: all 0.2s;
+    -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+}
+.sim-btn:hover { background: rgba(255,255,255,0.15); }
+.sim-btn.on { border-color: #34C759; color: #34C759; }
+
+/* ── Phone frame on desktop ── */
+@media (min-width: 431px) {
+    body { align-items: flex-start; padding-top: 20px; }
+    .phone {
+        border-radius: 32px; min-height: 92vh; max-height: 96vh; overflow-y: auto;
+        box-shadow: 0 0 80px rgba(0,0,0,0.5), 0 0 200px rgba(70,180,255,0.03);
+        border: 1px solid rgba(255,255,255,0.06);
+    }
+    .phone::-webkit-scrollbar { width: 0; }
+}
+
+/* ── 下拉选择框：现代化外观（去原生箭头 + 自绘箭头 + hover/focus）──
+   深浅两套都由 --card-* 变量派生；config.html / phone.html 共用本文件。 */
+select, .charge-select {
+    appearance: none;
+    -webkit-appearance: none;
+    height: 32px;
+    padding: 0 26px 0 10px;
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    background-color: var(--card-bg);
+    background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+                      linear-gradient(135deg, currentColor 50%, transparent 50%);
+    background-position: right 12px center, right 7px center;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+    color: var(--text-dim);
+    font-size: 12.5px;
+    cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+select:hover, .charge-select:hover { color: var(--text); }
+select:focus, .charge-select:focus {
+    outline: none;
+    border-color: var(--accent, #46B4FF);
+    box-shadow: 0 0 0 3px rgba(var(--limit-c2-rgb, 70, 180, 255), 0.18);
+}
+select option, .charge-select option { background: var(--card-bg); color: var(--text); }
+body.light select, body.light .charge-select { border-color: rgba(0, 0, 0, 0.14); }
+body.light select option { background: #fff; color: #1a1a1a; }
+.mini-stat {
+    text-align: center;
+    padding: 8px 4px;
+    background: var(--card-bg, rgba(255,255,255,0.03));
+    border-radius: 8px;
+}
+.mini-stat-value {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text);
+}
+.mini-stat-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 2px;
+}
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* ── English layout guards ── */
+html[lang="en"] .scene-card-title,
+html[lang="en"] .screen-card-title,
+html[lang="en"] .trickle-card-title,
+html[lang="en"] .port-ctl-title,
+html[lang="en"] .total-power-title,
+html[lang="en"] .full-chart-title,
+html[lang="en"] .mini-stat-label,
+html[lang="en"] .config-label,
+html[lang="en"] .config-hint {
+    letter-spacing: 0;
+    word-break: break-word;
+    line-height: 1.35;
+}
+html[lang="en"] .navbar .nav-title { font-size: 15px; }
+html[lang="en"] .scene-btn .scene-label { font-size: 12px; }
+
+/* ── Charge Limit card（端口色/墨色变量见文件顶部 :root / body.light）──
+   手机端 4 个端口改成"堆叠卡组"：4 张卡落在同一格 grid 里，只有栈顶那张完整
+   可见，其余按 --depth 逐层下移 + 左右收窄，只露出底部一条边。整卡高度因此从
+   4 份降到 1 份，这是本次改版的主要目的。
+   --depth / --limit-count 由 phone.js 写入，翻页手势也在那边（bindLimitGesture）。
+   overflow: hidden 是让被划走的卡片滑出卡外即被裁掉，别去掉。 */
+.charge-limit-deck {
+    display: grid;
+    grid-template-columns: 100%;   /* 显式定宽：卡片的 width: calc(100% - …) 要有确定基准 */
+    --limit-peek: 9px;             /* 每层露出的边缘高度 */
+    /* 给下面几层留出露边空间（层数由 phone.js 按端口数写入）；+2px 是余量，
+       保证最深那张的底边落在裁剪边界内侧，不被切掉。 */
+    padding-bottom: calc((var(--limit-count, 4) - 1) * var(--limit-peek) + 2px);
+    overflow: hidden;
+    touch-action: pan-y;           /* 纵向留给页面滚动，横向手势自己接管 */
+    /* 顶部留出 hover 抬升的空档：抬 3px，外加外圈描边 1px —— overflow: hidden 会把
+       超出边界的部分一起裁掉，不预留的话栈顶那张一 hover 就被切掉顶上一条边
+       （与桌面 .deck 同一处理）。 */
+    padding-top: 4px;
+}
+.charge-limit-deck.no-anim .charge-limit-card { transition: none; }
+
+.charge-limit-card {
+    grid-area: 1 / 1;
+    justify-self: center;
+    width: calc(100% - var(--depth, 0) * 8px);
+    transform: translateY(calc(var(--depth, 0) * var(--limit-peek)));
+    background: var(--bg);
+    border: 1px solid var(--card-border);
+    border-radius: 14px;
+    padding: 12px 14px 14px;
+    transition: transform 0.3s cubic-bezier(0.22, 0.61, 0.36, 1), opacity 0.3s, width 0.3s,
+                translate 0.22s cubic-bezier(0.22, 0.61, 0.36, 1), border-color 0.22s,
+                box-shadow 0.22s;
+    user-select: none; -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+}
+/* 整卡不可选中（拖拽时不会选中文字），但输入控件里仍要能编辑 */
+.charge-limit-card input, .charge-limit-card select { user-select: text; -webkit-user-select: text; }
+
+/* 白色主题的内层端口卡：纯白 + 加深一档的描边 + 两层轻投影。
+   白卡叠在白卡上没有任何颜色差，全靠描边和投影把层级立住——所以这两样都不能省
+   （测试里有断言盯着：卡面与外层同色时，必须有投影）。投影偏下方，正好落在下层
+   卡片露出的那条边上，一沓卡"叠起来"的观感就来自这里。
+   深色主题保持不动：那边靠 --bg(#121215) 与 --card-bg(#000) 的色差分层，本来就
+   有层次，加投影反而糊。 */
+body.light .charge-limit-card {
+    background: #fff;
+    border-color: rgba(0, 0, 0, 0.12);
+    box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08), 0 2px 8px rgba(16, 24, 40, 0.10);
+}
+/* 白卡上的输入/下拉改用浅灰填充：不然白底 + 几乎看不见的描边，控件边界会糊掉 */
+body.light .charge-limit-wh,
+body.light .charge-limit-mode {
+    background: var(--bg);
+}
+
+/* ── hover 微浮动 ──
+   手机页的主场景是触摸，这套只在"能真 hover 的设备"（桌面浏览器预览、带鼠标的
+   平板）生效；触摸端点一下会留下"粘住"的 hover 态，卡片回不去。
+   位置同样走独立的 translate 属性：卡片的栈序由 transform: translateY(--depth)
+   定，把它改成 transform 会顶掉站位、牌堆当场塌。
+   深色主题没有投影（分层靠 --bg 与 --card-bg 的色差），hover 的线索就交给一圈
+   端口色描边——注意只能是外圈 box-shadow，不能把 border 直接改成端口色：亮端口色
+   在 #121215 上有 7:1 以上，在白底上却只有 1.3～2.6:1（见文件里 --limit-graphic-edge
+   那段说明），所以浅色主题仍走"抬起来 + 补一层投影"。 */
+@media (hover: hover) and (pointer: fine) {
+    .charge-limit-card:hover {
+        translate: 0 -3px;
+        box-shadow: 0 0 0 1px rgba(var(--port-color-rgb), 0.55);
+    }
+    body.light .charge-limit-card:hover {
+        box-shadow: 0 6px 16px rgba(16, 24, 40, 0.14), 0 2px 4px rgba(16, 24, 40, 0.07);
+    }
+}
+
+/* 图形描边：亮端口色在黑底上有 7:1 以上，但白底小图形只有 1.3～2.6:1，浅色主题
+   得靠一圈中性深色把轮廓撑出来。不能改成"浅色主题换一批暗端口色"——那样进度条
+   和圆点会明显发暗、和暗色主题对不上（已经踩过一次）。
+   深色主题直接用端口色（同色描边，看不出多一圈）；浅色主题用下面
+   body.light .charge-limit-* 覆盖成中性深色。 */
+.charge-limit-card, .charge-limit-dotnav {
+    --limit-graphic-edge: var(--port-color);
+    --limit-graphic-edge-danger: var(--limit-danger);
+}
+body.light .charge-limit-card, body.light .charge-limit-dotnav {
+    --limit-graphic-edge: #7A7A7A;
+    --limit-graphic-edge-danger: #7A7A7A;
+}
+
+.charge-limit-card.c1, .charge-limit-dotnav.c1 { --port-color: var(--limit-c1); --port-color-rgb: var(--limit-c1-rgb); }
+.charge-limit-card.c2, .charge-limit-dotnav.c2 { --port-color: var(--limit-c2); --port-color-rgb: var(--limit-c2-rgb); }
+.charge-limit-card.c3, .charge-limit-dotnav.c3 { --port-color: var(--limit-c3); --port-color-rgb: var(--limit-c3-rgb); }
+.charge-limit-card.a,  .charge-limit-dotnav.a  { --port-color: var(--limit-a);  --port-color-rgb: var(--limit-a-rgb);  }
+
+.charge-limit-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.charge-limit-title { display: flex; align-items: center; gap: 8px; }
+/* 端口色小圆点：两套主题用同一个亮色（和暗色主题观感一致）；浅色主题下由
+   --limit-graphic-edge 补一圈描边，否则黄/浅蓝点在白底上只剩 1.3～1.6:1。 */
+.charge-limit-dot {
+    width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+    background: var(--port-color);
+    border: 1px solid var(--limit-graphic-edge);
+}
+.charge-limit-name { font-size: 15px; color: var(--text); }
+.charge-limit-track { height: 4px; border-radius: 2px; background: var(--limit-track); overflow: hidden; margin-bottom: 6px; }
+/* 进度条填充同样是两主题统一的亮色；浅色主题下槽底更深，靠对比看出进度 */
+.charge-limit-fill { height: 100%; width: 0; border-radius: 2px; background: var(--port-color); transition: width 0.4s ease; }
+/* 浅色主题：槽底已调轻，给亮色填充补一圈中性细描边，进度依然可辨 */
+body.light .charge-limit-fill { box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.22); }
+.charge-limit-progress { font-size: 11px; color: var(--text-dim); text-align: center; height: 14px; margin-bottom: 6px; }
+.charge-limit-inputs { display: flex; gap: 8px; margin-bottom: 6px; }
+.charge-limit-wh {
+    flex: 1; padding: 8px; border: 1px solid var(--card-border); border-radius: 10px;
+    background: var(--card-bg); color: var(--text); font-size: 14px; text-align: center; min-width: 0;
+}
+.charge-limit-mode {
+    flex: 0 0 auto; max-width: 45%;   /* 固定宽度：别被输入框挤到文字截断 */
+    padding: 8px; border: 1px solid var(--card-border); border-radius: 10px;
+    background: var(--card-bg); color: var(--text); font-size: 13px;
+}
+/* 快捷值一排 5 个，固定不换行：卡片越靠下越窄，一旦换行会把这层撑高、连带
+   把整沓卡的高度带上去（grid 行高取最大值）。内容只有 "5Wh" 这类短串，
+   缩到最窄也放得下。 */
+.charge-limit-quick { display: flex; gap: 4px; flex-wrap: nowrap; margin-bottom: 6px; }
+/* 快捷值 chip 与操作按钮都不复用 .sim-btn：那个类是为固定悬浮控件设计的，
+   底色写死 rgba(0,0,0,0.6)（在白色卡片上合成 #666）且不随主题变化；靠源码
+   顺序去覆盖它太脆弱，这里各自定义，颜色一律走主题变量。 */
+.charge-limit-chip {
+    /* 一排 5 个预设值 + "充满即停"共 6 项，在 ~286px 的卡内宽里每项只剩 ~39px：
+       左右内边距一留，"15Wh/20Wh/25Wh" 就会顶出药丸（桌面端预设按钮本来就没有
+       左右内边距，同一个理由）。再补 nowrap + 省略号兜底，宁可截断也不外溢。 */
+    flex: 1; min-width: 0; padding: 6px 2px; border-radius: 8px; font-size: 12px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    border: 1px solid var(--card-border);
+    background: rgba(128, 128, 128, 0.12);
+    color: var(--text);
+    cursor: pointer; transition: all 0.2s;
+    -webkit-tap-highlight-color: transparent;
+}
+.charge-limit-chip:active { border-color: var(--port-color); background: rgba(var(--port-color-rgb), 0.25); }
+.charge-limit-actions { display: flex; gap: 8px; }
+.charge-limit-action {
+    flex: 1; padding: 8px; border-radius: 10px; font-size: 13px;
+    background: transparent; cursor: pointer;
+    -webkit-tap-highlight-color: transparent; transition: all 0.2s;
+}
+/* 柔和淡染底 + 主题文字色（对齐 .countdown-toggle-btn 的既有淡染风格，
+   但文字用 --text 而非端口色——端口色是亮色，作白底小字仅 1.44～2.6:1 不可读；
+   作淡染底则没问题）。实底全饱和太扎眼，故用 0.15 淡染 + 同色细边框区分。
+   实测 --text 落淡染底：暗色最差 12.7:1 / 白色最差 13.4:1，远超 AA 的 4.5:1。 */
+.charge-limit-set {
+    color: var(--text);
+    background: rgba(var(--port-color-rgb), 0.15);
+    border: 1px solid rgba(var(--port-color-rgb), 0.3);
+    font-weight: 600;
+}
+.charge-limit-set:active { background: rgba(var(--port-color-rgb), 0.28); }
+.charge-limit-clear {
+    color: var(--text);
+    background: rgba(var(--limit-danger-rgb), 0.15);
+    border: 1px solid rgba(var(--limit-danger-rgb), 0.3);
+    font-weight: 600;
+}
+.charge-limit-clear:active { background: rgba(var(--limit-danger-rgb), 0.28); }
+
+/* 「自动」和 5/10/…Wh 预设值同款（同一个 .charge-limit-chip 底子）：等宽、无圆点，
+   开启/触发沿用预设值按下时的端口色配色，触发过改警示色 */
+.charge-limit-chip.limit-auto.is-on {
+    border-color: var(--limit-graphic-edge);
+    background: rgba(var(--port-color-rgb), 0.25);
+    color: var(--text);
+}
+.charge-limit-chip.limit-auto.is-fired {
+    border-color: var(--limit-graphic-edge-danger);
+    background: rgba(var(--limit-danger-rgb), 0.18);
+}
+.charge-limit-chip.limit-auto.is-disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* ── 卡头的"长期供电"开关 ──
+   胶囊徽标样式会被当成状态标签（用户不会去点它），这里做成通用开关：轨道 + 滑块 +
+   文字标签。::before 把可点区域撑到触屏尺寸，但**不改布局高度**——手机页整沓卡按
+   卡片高度算层叠位移（--limit-peek），高 1px 就会把卡组几何顶开。 */
+.limit-perm-switch {
+    position: relative; display: inline-flex; align-items: center; gap: 6px;
+    padding: 0; border: 0; background: none; cursor: pointer;
+    font: inherit; font-size: 11px; line-height: 1.4; color: var(--text-sub);
+    flex: none; white-space: nowrap;
+    -webkit-tap-highlight-color: transparent; transition: color 0.2s, opacity 0.2s;
+}
+/* 触屏可点区域：轨道本身只有 26×15，撑到 ~42×37 不动布局 */
+.limit-perm-switch::before { content: ""; position: absolute; inset: -11px -8px; }
+.limit-perm-switch-track {
+    position: relative; flex: none;
+    width: 26px; height: 15px; border-radius: 999px;
+    background: rgba(128, 128, 128, 0.28);
+    border: 1px solid var(--card-border);
+    transition: background 0.2s, border-color 0.2s;
+}
+.limit-perm-switch-track::after {
+    content: ""; position: absolute; top: 1px; left: 1px;
+    width: 11px; height: 11px; border-radius: 50%;
+    background: var(--text-sub);
+    transition: transform 0.24s cubic-bezier(0.22, 0.61, 0.36, 1), background 0.2s;
+}
+.limit-perm-switch.is-on { color: var(--text); }
+.limit-perm-switch.is-on .limit-perm-switch-track {
+    background: rgba(var(--port-color-rgb), 0.32);
+    border-color: var(--port-color);
+}
+.limit-perm-switch.is-on .limit-perm-switch-track::after {
+    transform: translateX(11px); background: var(--port-color);
+}
+.limit-perm-switch:active .limit-perm-switch-track { transform: scale(0.94); }
+/* 在途：请求发出到回来之间置灰并挡住重复点击（用户看得到"在处理"） */
+.limit-perm-switch[aria-busy="true"] { opacity: 0.5; pointer-events: none; }
+/* 二次确认态：文字变警示色，提示"再点一次" */
+.limit-perm-switch.is-confirm .limit-perm-switch-text { color: var(--limit-danger); font-weight: 600; }
+.limit-perm-switch:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+
+/* ── 长期供电端口：这张卡不再有"限额"这回事 ──
+   后端登记长期供电时会清掉该口限额并拒绝再设（API 400），所以限额控件全部收起，
+   只留头部那枚开关 + 这块状态面板。用 display:none 收起（不是 visibility 留白）。 */
+.charge-limit-card.is-permanent .charge-limit-inputs,
+.charge-limit-card.is-permanent .charge-limit-quick,
+.charge-limit-card.is-permanent .charge-limit-actions,
+.charge-limit-card.is-permanent .charge-limit-track,
+.charge-limit-card.is-permanent .charge-limit-progress,
+.charge-limit-card.is-permanent .limit-auto { display: none; }
+/* 卡高恒等于这一沓里最高的那张（同一 grid 格，等高等宽才能叠起来），收起控件后
+   腾出的空间用"读数"填满——而不是空着，或放一个不随数据变化的装饰圆环。
+   层级靠字号/字重 + 一条发丝线拉开；文字只用 --text / --text-sub
+   （深色 ≈7.4:1、浅色 ≈5.7:1，都过 AA——手机页的 --text-dim 在深色下只有 3.66:1）。 */
+.charge-limit-card.is-permanent { display: flex; flex-direction: column; }
+.charge-limit-card.is-permanent .charge-limit-head { margin-bottom: 4px; }
+.limit-perm-panel { display: none; }
+.charge-limit-card.is-permanent .limit-perm-panel {
+    display: flex; flex-direction: column; justify-content: center;
+    flex: 1; gap: 9px; padding: 2px 0 2px; text-align: left;
+}
+.limit-perm-main { display: flex; flex-direction: column; gap: 2px; }
+/* 主读数 = 本会话平均功率。标签在上、数值在下，与下面两个指标同一套"标签/数值"节奏；
+   用统计值而不是实时功率：实时值每帧都在跳，而"此刻在不在供电"由卡头呼吸点表达。 */
+.limit-perm-avgk { font-size: 10px; color: var(--text-sub); letter-spacing: 0.02em; }
+.limit-perm-power {
+    font-size: 36px; font-weight: 600; line-height: 1.02; letter-spacing: -0.02em;
+    color: var(--text); font-variant-numeric: tabular-nums;
+}
+/* 会话结束后仍显示上一段的平均功率，转次级墨色以示"这不是当下" */
+.limit-perm-power.is-idle { color: var(--text-sub); font-weight: 500; }
+.limit-perm-power .limit-perm-u { font-size: 17px; }
+.limit-perm-u { font-weight: 500; color: var(--text-sub); margin-left: 3px; letter-spacing: 0; }
+.limit-perm-v .limit-perm-u { font-size: 11px; }
+/* 次级指标：标签小、数值大。auto-fit 让"待机时只有一条"也能占满整行不留空洞 */
+.limit-perm-metrics {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 4px 12px;
+    border-top: 1px solid rgba(128, 128, 128, 0.22); padding-top: 9px;
+}
+.limit-perm-metric { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.limit-perm-k { font-size: 10px; color: var(--text-sub); letter-spacing: 0.02em; }
+.limit-perm-v {
+    font-size: 20px; font-weight: 600; color: var(--text);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.limit-perm-note { font-size: 11px; color: var(--text-sub); }
+
+/* ── 卡头端口色点：这一口此刻在供电 → 呼吸（scale + 扩散光环） ──
+   面板里只放统计数字，所以"现在到底在不在输出"全靠这个点。 */
+.charge-limit-dot.is-live { animation: dot-breathe 2.4s ease-in-out infinite; }
+@keyframes dot-breathe {
+    0%, 100% { transform: scale(1);    box-shadow: 0 0 0 0 rgba(var(--port-color-rgb), 0.55); }
+    50%      { transform: scale(1.18); box-shadow: 0 0 0 5px rgba(var(--port-color-rgb), 0); }
+}
+/* 降低动效偏好：换成静态光环，"在供电"这件事仍然看得见 */
+@media (prefers-reduced-motion: reduce) {
+    .charge-limit-dot.is-live {
+        animation: none; box-shadow: 0 0 0 3px rgba(var(--port-color-rgb), 0.30);
+    }
+}
+/* ── 端口模式开关（长期供电 / 充满即停）──
+   挂在限额卡头部（端口名与状态之间），**不新增行**：整卡高度与改版前一致，
+   卡组的层叠几何（--limit-peek）因此不会被撑开。文字走 --text-sub（端口色作
+   白底小字只有 1.4~2.6:1，不能当文字色），点灯靠端口色淡染底 + 描边 + 圆点；
+   解释文字只在 title 里。--text-sub 深色 ≈7.4:1 / 浅色 ≈5.7:1，两套主题都过 AA，
+   所以不再需要浅色主题那条覆盖。 */
+/* 长期供电开关钉在卡头右端：卡头不再有"未启用/已启用"文字，开关位置因此与
+   是否常供无关（切换时不会左右跳）。margin-left:auto 比 justify-content 更稳——
+   卡头里以后再加/减元素都不会把它挤走，也不会改变卡高。 */
+.limit-modes { display: inline-flex; align-items: center; gap: 4px; flex: none; margin-left: auto; }
+.limit-mode-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 1px 7px; border-radius: 999px;
+    border: 1px solid var(--card-border);
+    background: rgba(128, 128, 128, 0.12); color: var(--text-sub);
+    font: inherit; font-size: 10px; line-height: 1.5; cursor: pointer;
+    flex: none; white-space: nowrap;   /* 和 5/10/…Wh 预设同排：自己不被压缩、不换行 */
+    -webkit-tap-highlight-color: transparent; transition: all 0.2s;
+}
+/* 手写 hover 只在真有指针的设备上生效，避免触屏点一下之后残留 hover 态 */
+@media (hover: hover) { .limit-mode-chip:hover { color: var(--text); } }
+/* 键盘聚焦环：currentColor 在两套主题下都是正文墨色，白底/黑底都看得见 */
+.limit-mode-chip:focus-visible { outline: 2px solid currentColor; outline-offset: 1px; }
+.limit-mode-chip-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: 0.4; }
+.limit-mode-chip.is-on {
+    color: var(--text);
+    border-color: var(--limit-graphic-edge);
+    background: rgba(var(--port-color-rgb), 0.18);
+}
+.limit-mode-chip.is-on .limit-mode-chip-dot { background: var(--limit-graphic-edge); opacity: 1; }
+.limit-mode-chip.is-fired { border-color: var(--limit-graphic-edge-danger); }
+.limit-mode-chip.is-fired .limit-mode-chip-dot { background: var(--limit-danger); opacity: 1; }
+.limit-mode-chip.is-disabled, .limit-mode-chip:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* ── 常供会话"没有曲线"的说明（charge_history.js 注入，两页共用文案） ──
+   窗口长度/滑动控件已去掉：有曲线就画整段（服务端保留 1 小时），
+   没曲线就把定高的图表区收起来，只留这行说明。 */
+.sd-no-curve {
+    display: block; margin: 0 0 8px; font-size: 11px; color: var(--text-sub);
+}
+
+/* ── 翻页指示点：不只指示"现在看的是哪个端口"，还要能一眼看出哪些端口设了限额
+   （卡组一次只显示一个端口，不滑过去就看不到别的端口）。状态编码：
+   空心 = 没做任何设置；实心 = 已设（限额 / 自动断电 / 长期供电）；
+   实心且换成警示墨色 = 本次已触发关断；
+   拉长成胶囊 = 当前置顶的那张 —— 形状差异不依赖颜色，色盲用户同样能分辨。
+   按钮本体 24×24 是为了够到触摸目标，视觉圆点由 ::before 画。 ── */
+.charge-limit-dots { display: flex; justify-content: center; align-items: center; gap: 6px; margin-top: 10px; }
+.charge-limit-dotnav {
+    width: 24px; height: 24px; padding: 0; border: 0; background: none;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.charge-limit-dotnav::before {
+    content: ''; box-sizing: border-box;
+    width: 10px; height: 10px; border-radius: 5px;
+    border: 2px solid var(--limit-graphic-edge);
+    background: transparent;
+    transition: width 0.25s ease, background-color 0.25s ease, border-color 0.25s ease;
+}
+.charge-limit-dotnav.is-set::before { background: var(--port-color); }
+.charge-limit-dotnav.is-fired::before {
+    border-color: var(--limit-graphic-edge-danger); background: var(--limit-danger);
+}
+.charge-limit-dotnav.is-current::before { width: 22px; }
+
+/* 翻卡是纯装饰动效：用户要求减少动态时直接关掉过渡（JS 的状态机不依赖过渡事件） */
+@media (prefers-reduced-motion: reduce) {
+    .charge-limit-deck .charge-limit-card { transition: none; }
+    .charge-limit-dotnav::before { transition: none; }
+}
+
+
+/* ══════════ 设备切换：标题栏下拉列表（phone.js）══════════
+   手机上不再有"吸顶横条"：导航栏的标题本身就是入口（多台设备时标题显示当前
+   这一台，右侧带一个 ▾），点一下从导航下面展开一列小卡片——名字 + 端口微点 +
+   实时功率脊，点哪张整页就换成哪台。收起来的时候一个像素都不占。 */
+/* 标题栏本身就是切换入口（内容 = 当前设备名 + ▾）：它继承上面 .nav-title 的
+   居中与字号，这里只补"像一颗按钮"的那部分。 */
+/* 只对 <button class="nav-title"> 生效：config.html 的标题是 <div class="nav-title">，
+   它不是入口、不该继承 cursor:pointer，也不该被下面的 ::before 配平块顶偏。 */
+button.nav-title {
+    display: flex; align-items: center; justify-content: center; gap: 3px;
+    min-width: 0;                       /* 名字太长就省略号，别把导航撑破 */
+    background: none; border: 0; padding: 0 4px; font-family: inherit; font-size: inherit;
+    font-weight: inherit; color: var(--text);
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+button.nav-title:disabled { cursor: default; }
+button.nav-title #navTitleText {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+button.nav-title:not(:disabled):active #navTitleText { opacity: .7; }
+/* 设备名要**真正居中**：右边挂着 ▾，左边补一块等宽的空档，两边的白边才一样长
+   （只靠 flex 居中，文字会被 ▾ 挤得偏左）。没有 ▾（单设备）时不补。 */
+button.nav-title:not(:disabled)::before { content: ''; width: 14px; flex: none; }
+.nav-caret {
+    display: inline-block; width: 14px; flex: none;
+    font-size: 14px; line-height: 1; text-align: center;
+    color: var(--text-sub); opacity: .75;
+    transition: transform .2s ease, opacity .2s ease, color .2s ease;
+}
+button.nav-title:not(:disabled):hover .nav-caret { opacity: 1; color: var(--text); }
+button.nav-title:not(:disabled):active .nav-caret { opacity: .8; }
+button.nav-title[aria-expanded="true"] .nav-caret { transform: rotate(180deg); opacity: 1; color: var(--text); }
+.nav-caret[hidden] { display: none; }
+
+.dev-menu {
+    position: fixed; top: 48px; left: 0; right: 0; z-index: 120;
+    max-width: var(--page-width); margin: 0 auto;
+    padding: 8px 12px 12px; background: var(--bg);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 18px 36px rgba(0, 0, 0, 0.55);
+    animation: devMenuIn .16s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+body.light .dev-menu { border-bottom-color: rgba(0, 0, 0, 0.08); box-shadow: 0 18px 36px rgba(16, 24, 40, 0.16); }
+.dev-menu[hidden] { display: none; }
+@keyframes devMenuIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+.dev-menu-list {
+    list-style: none; margin: 0; padding: 0;
+    display: flex; flex-direction: column; gap: 8px;
+    max-height: 60vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+}
+
+/* 列表里的小卡片：与桌面牌堆同一套内容（灯 / 名字 / 端口微点 / 瓦数 / 功率脊），
+   一眼就能看出"哪台在干活"，点一下切过去。 */
+.dev-item {
+    position: relative; display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px 13px; border-radius: 12px;
+    background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.08);
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+    transition: background .16s ease, border-color .16s ease;
+}
+body.light .dev-item { background: #fff; border-color: rgba(0, 0, 0, 0.08); box-shadow: 0 1px 3px rgba(16, 24, 40, 0.08); }
+.dev-item:active { background: rgba(255, 255, 255, 0.12); }
+body.light .dev-item:active { background: #f6f6f9; }
+.dev-item.is-current { border-color: rgba(255, 255, 255, 0.24); background: rgba(255, 255, 255, 0.11); }
+body.light .dev-item.is-current { border-color: rgba(0, 0, 0, 0.16); }
+/* 预览标记：?preview=multi 时那几台是伪造的，必须说清楚，否则一眼看过去
+   分不出"家里真有三台在充"还是"在看排版" */
+.dev-menu-tag {
+    align-self: flex-start; padding: 0 2px 1px;
+    font-size: 9px; font-weight: 700; letter-spacing: .12em;
+    color: var(--text-dim); opacity: .75;
+}
+.dev-item--all { border-style: dashed; }
+.dev-item--all .bench-name { color: var(--text-sub); }
+
+.bench-led { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--text-dim); opacity: .45; }
+.bench-led.is-on { background: #34C759; opacity: 1; }
+.bench-body { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; min-width: 0; flex: 1; }
+.bench-name { font-size: 13.5px; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.bench-meta, .bench-ports { display: flex; align-items: center; gap: 3px; font-size: 10px; color: var(--text-dim); }
+.bench-port { width: 5px; height: 10px; border-radius: 2px; flex: none; background: var(--pc, currentColor); opacity: .3; }
+.bench-port.is-on { opacity: 1; }
+.bench-port.is-off-mode { outline: 1px dashed rgba(128,128,128,.45); }
+.bench-right { display: flex; align-items: baseline; margin-left: auto; flex: none; }
+.bench-w { display: flex; align-items: baseline; gap: 1px; color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bench-w b { font-size: 17px; font-weight: 650; letter-spacing: -0.01em; line-height: 1; }
+.bench-w em { font-style: normal; font-size: 9.5px; font-weight: 600; opacity: .55; }
+/* 功率脊：长度 = 该台功率 / 120W（"全部"那张 = n×120W），刻度与桌面版一致 */
+.bench-spine {
+    position: absolute; left: 10px; right: 10px; bottom: 5px; height: 2px; border-radius: 2px;
+    background: linear-gradient(to right,
+        var(--accent) calc(var(--share, 0) * 100%),
+        rgba(128,128,128,.28) calc(var(--share, 0) * 100%));
+    transition: background .24s ease;
+}
+
+/* ── 全部设备（汇总页）：单设备舞台整体让位 ── */
+.fleet-view { position: relative; z-index: 6; background: var(--bg); min-height: 100vh; }
+.fleet-view[hidden] { display: none; }
+.fleet-mode .top-view, .fleet-mode .bottom-view { display: none; }
+.fleet-wrap { padding: 6px 14px 40px; }
+.fleet-head { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+.fleet-title { font-size: 17px; font-weight: 600; margin: 0; color: var(--text); }
+.fleet-totals {
+    margin: 0; display: flex; gap: 12px; flex-wrap: wrap;
+    font-size: 11.5px; color: var(--text-dim); font-variant-numeric: tabular-nums;
+}
+.fleet-totals b { font-size: 13px; color: var(--text); font-weight: 600; }
+.fleet-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.fleet-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px; border-radius: 14px;
+    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08);
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+body.light .fleet-row { background: #fff; border-color: rgba(0,0,0,0.06); box-shadow: 0 1px 3px rgba(16,24,40,0.08); }
+.fleet-led { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--text-dim); opacity: .45; }
+.fleet-led.is-on { background: #34C759; opacity: 1; }
+.fleet-id { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.fleet-name { font-size: 14px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fleet-mac { font-size: 10px; color: var(--text-dim); }
+.fleet-dots { display: flex; gap: 4px; flex: none; }
+.fleet-port { width: 6px; height: 16px; border-radius: 3px; flex: none; background: var(--pc, currentColor); opacity: .25; }
+.fleet-port.is-on { opacity: 1; }
+.fleet-port.is-off-mode { outline: 1px dashed rgba(128,128,128,.45); }
+.fleet-nums { display: flex; align-items: baseline; gap: 2px; flex: none; font-variant-numeric: tabular-nums; }
+.fleet-w { font-size: 16px; font-weight: 600; color: var(--text); }
+.fleet-nums em { font-style: normal; font-size: 9.5px; color: var(--text-dim); }
+.fleet-today { font-size: 10px; color: var(--text-dim); margin-left: 6px; }

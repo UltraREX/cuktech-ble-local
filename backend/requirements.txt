@@ -1,0 +1,8 @@
+# 运行依赖，start.ps1 按此文件安装到 .venv。
+# requests / pycryptodomex 只在小米扫码登录时才导入：漏装不会在启动时报错。
+aiohttp>=3.9
+bleak>=0.21
+cryptography>=41
+pyyaml>=6.0
+requests>=2.31
+pycryptodomex>=3.20

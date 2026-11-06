@@ -1,0 +1,358 @@
+/*!
+ * zh-CN locale pack for the CUKTECH BLE web UI.
+ * Values reproduce the original Chinese UI exactly.
+ */
+(function (global) {
+    'use strict';
+    global.I18N_RESOURCES = global.I18N_RESOURCES || {};
+    global.I18N_RESOURCES['zh-CN'] = {
+        // ── Common ──
+        common: {
+            initPartial: '部分界面初始化失败，请刷新页面',
+            connect: '连接设备',
+            disconnect: '断开设备',
+            close: '关闭',
+            cancel: '取消',
+            set: '设置',
+            clear: '清除',
+            clearing: '清除中...',
+            setting: '设置中...',
+            saving: '保存中...',
+            notSet: '未设置',
+            loading: '加载中...',
+            connected: '已连接',
+            connectingDots: '连接中...',
+            disconnecting: '断开中...',
+            disconnected: '未连接',
+            unknownError: '未知错误',
+            networkError: '网络错误: {{msg}}',
+            saveFailed: '保存失败: {{msg}}',
+            setFailed: '设置失败: {{msg}}',
+            firmware: '固件版本：{{version}}',
+            theme: '主题',
+            minutes: '{{count}}分钟',
+            hours: '{{count}}小时',
+            hoursMinutes: '{{h}}小时{{m}}分钟'
+        },
+
+        // ── Power units ──
+        power: {
+            total: '总功率 (W)'
+        },
+
+        // ── Index page ──
+        index: {
+            powerChart: '功率曲线',
+            chargeHistory: '充电记录',
+            deviceSettings: '设备设置',
+            config: '配置',
+            themeDark: '深色',
+            themeLight: '浅色',
+            themeSystem: '跟随系统',
+            range30: '30分',
+            range60: '60分',
+            range120: '120分',
+            range1440: '24小时',
+            metricPower: '功率',
+            metricVoltage: '电压',
+            metricCurrent: '电流',
+            metricTotal: '总功率',
+            chartAria: '功率曲线图：各端口功率随时间的变化',
+            chartAriaMetric: '{{metric}}曲线图：各端口随时间的变化',
+            loadBasis: '负载条基准：本口上限 {{max}} W'
+        },
+
+        // ── Scene modes (device) ──
+        scene: {
+            ai: 'AI模式',
+            eco: '数码生态',
+            single: '单口模式',
+            balanced: '均衡模式',
+            descAi: '自动识别设备智能匹配最优充电功率',
+            descEco: '多口同时充电均衡分配功率',
+            descSingle: '单口最大功率输出优先C1口',
+            descBalanced: '多个端口均衡分配充电功率'
+        },
+
+        // ── Device settings (PIID config) ──
+        settings: {
+            sceneMode: '场景模式',
+            screenTimeout: '息屏时间',
+            deviceLanguage: '语言',
+            usbATrickle: 'USB-A小电流',
+            idleScreenOff: '空闲息屏',
+            screenLock: '屏幕方向锁',
+            off: '关闭',
+            on: '开启',
+            min5: '5分钟',
+            min10: '10分钟',
+            min30: '30分钟',
+            alwaysOn: '常亮',
+            min1: '1分钟'
+        },
+
+        // ── Port detail modal ──
+        modal: {
+            portDetail: '{{port}} 端口详情',
+            voltage: '电压 (V)',
+            current: '电流 (A)',
+            power: '功率 (W)',
+            protocol: '实时充电协议',
+            realtime: '⚡ 实时',
+            realtimeStop: '⏹ 实时',
+            protocolSwitch: '协议开关',
+            noData: '协议开关 — 暂无数据',
+            ppsNote: '关闭PD后PPS也将关闭',
+            replugNote: '需重新插拔端口设备生效'
+        },
+
+        // ── Connection quality tooltips ──
+        quality: {
+            connectionDuration: '连接时长',
+            lastPush: '最后推送',
+            nextReconnect: '下次重连',
+            decryptSuccess: '解密成功',
+            notifyResponse: '通知响应',
+            connectionStable: '连接稳定',
+            reconnect5m: '5min重连',
+            notConnected: '未连接',
+            none: '无',
+            secondsAgo: '{{count}}s前',
+            secondsLater: '{{count}}s后',
+            times: '{{count}}次'
+        },
+
+        // ── Countdown ──
+        countdown: {
+            title: '倒计时设置',
+            hourUnit: '时',
+            minuteUnit: '分',
+            quick: '{{count}}分',
+            quickHours: '{{count}}小时'
+        },
+
+        // ── Charge limit (充到指定 Wh 自动关断) ──
+        chargeLimit: {
+            title: '充电量限额',
+            hint: '电量指充电器输出能量（Wh），非设备实际充入电量（有线损/转换损耗）',
+            unit: 'Wh',
+            placeholder: 'Wh',
+            off: '未启用',
+            enabled: '已启用',
+            used: '已充 {{used}} Wh',
+            once: '仅一次',
+            always: '长期有效',
+            fired: '已触发',
+            progress: '已充 {{used}} / {{total}} Wh',
+            set: '设置',
+            clear: '关闭',
+            saved: '限额已保存',
+            modeSaved: '模式已保存',
+            cleared: '已关闭该端口限额',
+            saveFailed: '设置失败：{{msg}}',
+            // 两枚紧凑开关：卡面只放这几个字，细节走 title 提示
+            permanent: '长期供电',
+            permanentHint: '长期供电：不记曲线、不被限额关闭',
+            permanentOff: '点击关闭长期供电',
+            permanentConfirm: '再点一次确认',
+            permanentClearsLimit: '开启长期供电会清除该端口限额，再点一次确认',
+            permanentAvg: '平均功率',
+            permanentAvgLast: '上次平均功率',
+            permanentOut: '本次已输出',
+            permanentLastOut: '上次输出',
+            permanentNoOutput: '暂无输出',
+            permanentDurLabel: '已持续',
+            permanentDurMin: '{{m}}分钟',
+            permanentDurHour: '{{h}}小时{{m}}分',
+            permanentDurDay: '{{d}}天{{h}}小时',
+            permanentDurDayOnly: '{{d}}天',
+            permanentNote: '不记曲线，耗电统计照常',
+            fullOff: '自动',
+            fullOffHint: '识别到充满电后自动关闭该端口',
+            fullOffFired: '已充满断电',
+            permanentConflict: '长期供电端口不适用自动断电'
+        },
+
+        // ── Charge history ──
+        charge: {
+            today: '今日',
+            yesterday: '昨日',
+            // week / month 在后端是**滚动** 7 / 30 天窗口（history._period_window），
+            // 不是自然周/自然月，文案必须跟着这么写，否则"本周"会包含上周的数据。
+            week: '近 7 天',
+            month: '近 30 天',
+            all: '全部',
+            export: '导出 CSV',
+            totalWh: '总充电 Wh',
+            sessionCount: '充电次数',
+            avgPower: '平均功率 W',
+            peakPower: '峰值功率 W',
+            noRecords: '暂无充电记录',
+            energy: '电量：{{wh}}Wh',
+            powerTooltip: '功率: {{power}}W',
+            protocolTooltip: '协议: {{protocol}}',
+            prevPage: '上一页',
+            nextPage: '下一页',
+            accuracy: '精度',
+            allPoints: '全部',
+            points100: '100点',
+            points200: '200点',
+            points300: '300点',
+            points600: '600点',
+            energyUnit: '电量 Wh',
+            avgPowerUnit: '均功率 W',
+            peakPowerUnit: '峰功率 W',
+            avgVoltageUnit: '均电压 V',
+            avgCurrentUnit: '均电流 A',
+            yesterdayTime: '昨天 {{time}}',
+            // 长期供电（常供）相关：记录列表里的标记 + 详情浮层的滑动窗口
+            permanentWindow: '长期供电',
+            noCurve: '此会话没有采样曲线，仅保留统计'
+        },
+
+        // ── Energy overview card (用电统计) ──
+        energy: {
+            title: '用电统计',
+            tabPorts: '按端口',
+            tabHourly: '每小时',
+            tabProtocols: '快充协议',
+            total: '{{period}} · 合计 {{wh}} Wh',
+            count: '{{count}} 次',
+            unknown: '未识别',
+            noData: '该周期暂无数据',
+            hourlyAria: '近 24 小时每小时用电量柱状图'
+        },
+
+        // ── Phone page ──
+        phone: {
+            sceneMode: '场景模式',
+            portControl: '端口控制',
+            screenTimeout: '息屏时间',
+            usbATrickle: 'USB-A小电流',
+            totalPowerTitle: '当前总功率',
+            currentPower: '当前功率',
+            powerChart: '功率曲线',
+            powerDist: '功率占比',
+            chargeHistory: '充电记录',
+            delayOff: '延时关闭',
+            noActivePorts: '暂无活跃端口',
+            connectToast: '正在连接设备，请稍候...',
+            replugNote: '需重新插拔端口'
+        },
+
+        // ── Config page ──
+        config: {
+            title: '系统配置',
+            xiaomiAuto: '小米云自动获取',
+            mac: 'MAC 地址',
+            macHint: '充电器蓝牙 MAC 地址',
+            tokenHint: '设备认证 Token (十六进制)',
+            bleKeyHint: '加密密钥 (十六进制)',
+            serverSection: '服务器',
+            webPort: 'Web 端口',
+            retention: '数据保留天数',
+            webLanguage: '界面语言',
+            webLanguageHint: '即时生效，无需重启；所有页面自动同步',
+            langAuto: '跟随系统',
+            langApplied: '语言已切换',
+            langAutoApplied: '已切换到跟随系统',
+            sessionRecording: '充电会话记录',
+            sessionRecordingHint: '即时生效，无需重启；关闭后不再记录充电历史',
+            logLevel: '日志等级',
+            logLevelHint: '即时生效，无需重启；error 最少，debug 最详细',
+            logLevelSet: '日志等级已设为 {{level}}',
+            currentStatus: '当前状态',
+            loaded: '配置已加载',
+            loadFailed: '加载失败: {{msg}}',
+            saveRestart: '保存配置并重启',
+            savedRestart: '配置已保存，服务正在重启...',
+            sessionRecordingOn: '已开启充电会话记录',
+            sessionRecordingOff: '已关闭充电会话记录',
+            xiaomiLogin: '小米云登录',
+            serverRegion: '服务器区域',
+            regionCn: '中国大陆 (cn)',
+            regionDe: '欧洲 (de)',
+            regionUs: '美国 (us)',
+            regionRu: '俄罗斯 (ru)',
+            regionTw: '台湾 (tw)',
+            regionSg: '新加坡 (sg)',
+            regionIn: '印度 (in)',
+            getQR: '获取二维码',
+            fetching: '获取中...',
+            connectingXiaomi: '正在连接小米云...',
+            qrFailed: '获取二维码失败',
+            qrLoadFailed: '二维码加载失败',
+            waitingScan: '等待扫码...',
+            scanInstruction: '请用米家 App 扫描二维码登录',
+            scanWithApp: '使用<strong style="color:#333;">米家 App</strong> 扫描下方二维码',
+            orOpenLink: '或复制链接到浏览器打开：',
+            scanned: '已完成扫码',
+            scanTimeout: '等待超时，请重新获取二维码',
+            noDevices: '未找到设备',
+            selectCharger: '选择充电器设备（可多选）：',
+            fetchingBleKey: '正在获取 BLE Key...',
+            bleKeyFailed: '获取 BLE Key 失败: {{msg}}',
+            xiaomiSelectAll: '全选',
+            xiaomiSelectNone: '全不选',
+            xiaomiSyncNames: '同步小米云设备名称',
+            xiaomiSyncNamesHint: '勾选后用云上的名称覆盖设备卡片里已有的名字',
+            xiaomiConfigured: '已配置',
+            xiaomiImport: '导入选中（{{n}} 台）',
+            xiaomiImportEmpty: '请至少选择一台设备',
+            xiaomiImporting: '正在导入...',
+            xiaomiImportDone: '已填入设备卡片：新增 {{added}} 台、更新 {{updated}} 台。别忘了点「保存配置并重启」生效',
+            xiaomiImportDoneWithFailed: '已填入设备卡片：新增 {{added}} 台、更新 {{updated}} 台、失败 {{failed}} 台。别忘了点「保存配置并重启」生效',
+            xiaomiImportFailed: '导入失败',
+
+            // ── 多设备管理（设备卡片列表）──
+            devicesSection: '充电器',
+            // 多设备能力在真机 canary 通过前标 Beta：让用户在配置页就知道
+            // "多台真机同时跑"还没被硬件验证过，而不是出事后再解释。
+            multiDeviceBeta: 'Beta',
+            devicesHint: '一台主机可同时连接多台充电器；保存后需重启生效',
+            addDevice: '添加充电器',
+            editDevice: '编辑',
+            removeDevice: '删除',
+            primaryTag: '主设备',
+            primaryUndeletable: '主设备是配置文件 ble: 节里的那台，不能删除',
+            deviceName: '名称',
+            deviceNameHint: '页面上显示的设备名，留空则用设备 ID',
+            deviceId: '设备 ID',
+            deviceIdHint: '充电器的唯一标识，小写字母/数字/_- 且不能以符号开头',
+            confirmRemoveDevice: '删除充电器「{{name}}」？保存并重启后生效。',
+            invalidDeviceId: '「{{name}}」的设备 ID 非法：只允许小写字母、数字、_ 和 -，且以字母或数字开头',
+            needMacToken: '「{{name}}」缺少 MAC 或 Token',
+            deviceAdded: '已添加一台充电器，填好 MAC / Token 后保存'
+        },
+
+        // ── Device switcher（多设备共用，index.html / phone.html）──
+        device: {
+            switcher: '设备切换',
+            // ── 多设备工作台（device-bench.js）──
+            // 全部设备的显示名用"充电器"而不是内部 id：primary 没有名字时绝不能把
+            // `default` 这种内部标识塞给用户（中文页面里出现英文字符串的常见来源）。
+            all: '全部',
+            unnamedDevice: '未命名设备',
+            primaryName: '默认充电器',
+            // 桌面牌堆上那张卡既可拖动翻牌，也可单击打开这台设备的设置。
+            cardHint: '单击打开这台设备的设置',
+            allHint: '单击查看全部设备',
+            // 翻牌箭头的读屏文案（界面上不出现文字，只出现箭头）
+            prev: '上一台',
+            next: '下一台',
+            onlineCount: '{{online}}/{{total}} 在线',
+            fleetTitle: '全部充电器',
+            fleetNow: '实时',
+            fleetOnline: '在线',
+            fleetToday: '今日',
+            todayWh: '今日 {{wh}} Wh'
+        },
+
+        // ── Page titles ──
+        pageTitle: {
+            index: 'CUKTECH 10 GaN Charger Ultra',
+            phone: 'CUKTECH 10 Ultra 充电器',
+            config: 'CUKTECH 配置'
+        }
+    };
+})(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));

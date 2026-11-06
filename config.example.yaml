@@ -1,0 +1,11 @@
+ble:
+  mac: ""
+  token: ""
+  ble_key: ""
+  scan_timeout: 15
+
+server:
+  host: "127.0.0.1"
+  port: 18199
+  log_level: "info"
+  history_retention_days: 2

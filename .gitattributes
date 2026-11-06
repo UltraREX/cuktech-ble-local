@@ -1,0 +1,4 @@
+* text=auto
+
+# cmd 解析 LF 换行的批处理文件不可靠
+*.bat text eol=crlf

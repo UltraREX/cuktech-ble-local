@@ -1,0 +1,2136 @@
+        // 主题名 → 外观。调色板本体在 index.css 的 :root（米家暗色）
+        // 与 html[data-appearance="light"]（米家浅色）里，与 phone.css 同源。
+        // 为什么不再由 JS 写内联颜色变量：
+        //   1. 两处调色板容易漂移，改一处忘一处；
+        //   2. 内联变量要等脚本执行才注入，浅色主题会先闪一下深色。
+        // 现在 JS 只负责把 <html data-appearance> 切成 dark/light。
+        const THEME_APPEARANCE = { 'ha-dark': 'dark', 'light': 'light' };
+
+        function setTheme(themeName) {
+            if (themeName === 'system') {
+                localStorage.setItem('cuktech-theme', 'system');
+                const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+                applyTheme(prefersDark ? 'ha-dark' : 'light');
+            } else {
+                localStorage.setItem('cuktech-theme', themeName);
+                localStorage.removeItem('cuktech-theme-original');
+                applyTheme(themeName);
+            }
+            document.querySelectorAll('.theme-option').forEach(opt => {
+                opt.classList.toggle('active', opt.dataset.theme === themeName);
+            });
+            document.getElementById('themeMenu').classList.remove('show');
+        }
+
+        function applyTheme(themeName) {
+            const appearance = THEME_APPEARANCE[themeName] || 'dark';
+            document.documentElement.setAttribute('data-appearance', appearance);
+            // canvas 图表吃不到 CSS 变量，换肤后需要按新令牌重刷一次
+            if (typeof refreshChartTheme === 'function') refreshChartTheme();
+            // 场景图标是成对的位图（dark/light 各一套），也要跟着换
+            if (typeof refreshSceneIcons === 'function') refreshSceneIcons();
+        }
+
+        function toggleThemeMenu() {
+            document.getElementById('themeMenu').classList.toggle('show');
+        }
+
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.theme-switcher')) {
+                document.getElementById('themeMenu').classList.remove('show');
+            }
+        });
+
+        // Load saved theme —— 未设置过时跟随系统 prefers-color-scheme
+        const savedTheme = localStorage.getItem('cuktech-theme') || 'system';
+        setTimeout(() => setTheme(savedTheme), 0);
+        // 系统外观变化时，若当前是「跟随系统」则实时切换
+        try {
+            window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+                if (localStorage.getItem('cuktech-theme') === 'system') setTheme('system');
+            });
+        } catch (e) {
+            // 旧浏览器只有 addListener，忽略即可：刷新后仍会解析到正确外观
+        }
+
+        // 日志等级的查看与修改已迁移到 config.html 的"服务器"卡片
+        // （/api/log-level 是即时生效的运行时配置，不属于本页）。
+
+        const API_BASE = window.location.origin;
+        const PORT_MAP = { 1: 'C1', 2: 'C2', 3: 'C3', 4: 'A' };
+        const PORT_KEY_MAP = { 1: 'c1', 2: 'c2', 3: 'c3', 4: 'a' };
+        // 各端口满载功率（W）：C1/C2 120W，C3 44W，USB-A 33W。端口小卡片的负载条按它算百分比。
+        const PORT_MAX_W = { 1: 120, 2: 120, 3: 44, 4: 33 };
+
+        // ══════════════════════════════════════════════════════════
+        //  多设备：状态按 device_id 分桶，`dev` 是"当前设备那一桶"的读写视图
+        //
+        //  为什么把状态搬进 DeviceStore 而不是在渲染函数里判断设备（§3.12）：
+        //  同型号充电器的 DOM 结构与素材完全一样，只有数据不同。所以
+        //  "切换设备" = 换指针 + 把现有渲染函数重放一遍，DOM 骨架一行不重建。
+        //  本文件里所有 `dev.ports` / `dev.settings` 都是这个视图的读写，
+        //  切设备时自动指向另一桶——渲染层因此完全不需要知道"多设备"这件事。
+        // ══════════════════════════════════════════════════════════
+        const dev = DeviceStore.init({
+            defaults: indexDeviceDefaults,
+            applyPorts: applyPortsToBucket,
+            replay: replayDeviceView,
+            switcherId: 'deviceSwitcher'
+        });
+
+        // 统一请求出口：本页所有 /api/* 都经过它，自动带上 ?device=<当前设备>
+        // （§3.12 决策 3：Web UI 用 query 形式寻址，HA 集成用路径形式）。
+        const api = DeviceStore.api;
+
+        // 一台设备的空桶：形状就是本页各处读的那几个字段。
+        function indexDeviceDefaults() {
+            return {
+                ports: {},              // /api/status 的 ports（1..4 + voltage/current/power）
+                settings: {},           // settings 的 piid → 值
+                protocolSwitches: {},   // 端口协议开关
+                protocolExtend: 0,
+                connected: false,       // BLE 链路
+                authenticated: false,   // 认证通过（徽章要两者都为真）
+                bleConnected: false,    // 上面两者的合取：各处"能控制设备了吗"的判定
+                bleEnabling: false,     // 已请求连接、尚未连上（扫描 + 认证要几十秒）
+                firmware: '',
+                scene: 1,               // 场景模式（本地最近一次已知值，含乐观更新）
+                quality: null,          // BLE 质量（页头徽章悬浮卡片）
+                realTimeBuf: { 1: [], 2: [], 3: [], 4: [] },  // 模态框实时曲线缓冲
+                limitModeSaved: {}      // 用户显式存过的限额模式（端口 → true）
+            };
+        }
+
+        // 端口数据落桶。桌面页直接沿用 API 形状（1..4 + voltage/current/power），
+        // 手机页要摊成自己的 c1..a/v-a-w —— 所以这一步由各页自己注册。
+        function applyPortsToBucket(b, msg) {
+            if (msg.type === 'port_update') {
+                const key = String(msg.port_id);
+                b.ports[key] = { ...(b.ports[key] || {}), ...(msg.data || {}) };
+                return;
+            }
+            if (msg.ports) {
+                b.ports = msg.ports;
+                return;
+            }
+            // 断开时把读数清零：否则界面停在最后一次的数值上（与下面 status
+            // 分支里的 DOM 处理同语义，只是这里要让它也落进桶）
+            if (msg.type === 'status' && msg.connected !== undefined
+                    && !(msg.connected && msg.authenticated)) {
+                for (const id of Object.keys(PORT_MAP)) {
+                    b.ports[id] = { voltage: 0, current: 0, power: 0, active: false, protocol: 'idle', enabled: true };
+                }
+            }
+        }
+
+        // 换设备时按顺序重放一遍现有渲染函数（§3.12 重放清单）。
+        // 顺序即副作用顺序：先收掉属于旧设备的弹窗，再重画设备图/端口/设置/页头，
+        // 最后才拉数据 —— 中间任何一步失败都不影响其余步（DeviceStore 逐条兜住）。
+        function replayDeviceView() {
+            closeModal();                                     // 端口 modal 的状态属于上一台
+            renderPorts(dev.ports || {});
+            updateDeviceContainer(dev.ports || {});
+            updateSummary(dev.ports || {});
+            updateSettingsUI(dev.settings || {});
+            renderCountdown(dev.settings || {});
+            renderScene(dev.settings || {});
+            updateStatusBadge(dev.connected, dev.authenticated);
+            updateBleButton();
+            renderFirmwareChip();
+            resetChartData();
+            fetchChartData();                                 // 图表重拉本设备的历史
+            resetEnergyCard();                                // 用电/协议统计同样是每设备一份
+            // 桶里可能只有"我们收到过的最后一次快照"（甚至根本没有）：换过去立刻
+            // 按新设备拉一次全量状态，避免空白/过期。charge_history 与 charge_limit
+            // 各自监听 device-changed 事件自取数据。
+            fetchStatus();
+        }
+
+        // 图表数据是每设备一份的。换设备时必须先扔掉旧设备的曲线：新设备的历史
+        // 还没到，屏幕上先出现上一台的曲线就是"串台"最直观的样子。
+        function resetChartData() {
+            _lastChartPayload = null;
+            for (let p = 1; p <= 4; p++) {
+                portHistory[p] = { voltage: [], current: [], power: [], protocol: [] };
+            }
+            if (powerChart) {
+                powerChart.data.labels = [];
+                powerChart.data.datasets.forEach(ds => { ds.data = []; });
+                powerChart.update('none');
+            }
+            // 实时累积缓冲与迷你柱状历史同理：都描述"这台设备最近的输出"
+            dev.realTimeBuf = { 1: [], 2: [], 3: [], 4: [] };
+            updateSummary._hist = [];
+        }
+
+        // 用电统计（总量 / 端口占比 / 协议占比 / 逐时柱状图）也是每设备一份。
+        // 不清空的话，从 A 切到 B 之后的第一秒里，卡片上写的是 A 的 Wh —— 而 B 的
+        // 请求还在路上。用户看到的"统计错了"十有八九就是这一秒的残影。
+        function resetEnergyCard() {
+            _energySeq++;                  // 让在途的旧设备响应作废（它可能后到）
+            energyStats = null;
+            energyProto = null;
+            renderEnergy();
+            refreshEnergyCard();
+            if (energyHourlyLoaded) {
+                energyHourlyLoaded = false;
+                if (hourlyChart) { hourlyChart.destroy(); hourlyChart = null; }
+                fetchEnergyHourly();
+            }
+        }
+
+        function renderFirmwareChip() {
+            const fwEl = document.getElementById('firmwareVersion');
+            if (!fwEl) return;
+            if (dev.firmware) {
+                fwEl.dataset.firmware = dev.firmware;
+                fwEl.textContent = I18N.t('common.firmware', { version: dev.firmware });
+            } else {
+                delete fwEl.dataset.firmware;
+                fwEl.textContent = I18N.t('common.disconnected');
+            }
+        }
+
+        // 负载百分比：空载（power<=0）给 0 = 空条；有输出时钳制在 2-99%，
+        // 满载也留 1% 空隙，条形圆角不会被裁成直角。
+        function loadPct(power, portId) {
+            if (!(power > 0)) return 0;
+            const max = PORT_MAX_W[portId] || 100;
+            return Math.min(99, Math.max(2, Math.round((power / max) * 100)));
+        }
+
+        // 场景模式（piid 5）不在这个列表里：它有自己的卡片（图标按钮那一排），
+        // 见 renderScene()。放两处会出现两个能改同一个值的入口。
+        const SETTINGS_CONFIG = [
+            { piid: 6, nameKey: 'settings.screenTimeout', options: [{ value: 1, labelKey: 'settings.min5' }, { value: 2, labelKey: 'settings.min10' }, { value: 3, labelKey: 'settings.min30' }, { value: 4, labelKey: 'settings.alwaysOn' }, { value: 5, labelKey: 'settings.min1' }] },
+            { piid: 13, nameKey: 'settings.deviceLanguage', options: [{ value: 0, label: 'English' }, { value: 1, label: '中文' }] },
+            { piid: 15, nameKey: 'settings.usbATrickle', options: [{ value: 0, labelKey: 'settings.off' }, { value: 1, labelKey: 'settings.on' }] },
+            { piid: 19, nameKey: 'settings.idleScreenOff', options: [{ value: 0, labelKey: 'settings.off' }, { value: 1, labelKey: 'settings.on' }] },
+            { piid: 20, nameKey: 'settings.screenLock', options: [{ value: 0, labelKey: 'settings.off' }, { value: 1, labelKey: 'settings.on' }] }
+        ];
+
+        // ── 场景模式卡（phone.html 的同款交互：一排圆形图标按钮 + 当前模式说明） ──
+        // 图标是成对的：{dark|light} × {on|off}，跟随主题与选中态切换；
+        // 图片名沿用 phone.js 的映射（2 号模式的图叫 mac，不是 eco）。
+        const SCENE_OPTIONS = [
+            { value: 1, img: 'ai',      labelKey: 'scene.ai',       descKey: 'scene.descAi' },
+            { value: 2, img: 'mac',     labelKey: 'scene.eco',      descKey: 'scene.descEco' },
+            { value: 3, img: 'single',  labelKey: 'scene.single',   descKey: 'scene.descSingle' },
+            { value: 4, img: 'balance', labelKey: 'scene.balanced', descKey: 'scene.descBalanced' }
+        ];
+        const SCENE_BADGE_IMG = { 1: 'ai', 2: 'apple', 3: 'single', 4: 'balance' };
+        const SCENE_PIID = 5;
+
+        function sceneIconSrc(opt, active) {
+            const theme = document.documentElement.getAttribute('data-appearance') === 'light' ? 'light' : 'dark';
+            return `/static/plugin_imgs/main_charger_${theme}_${opt.img}_${active ? 'on' : 'off'}.png`;
+        }
+
+        // 场景/设置/端口这些"每设备一份"的状态不在这里声明：它们住在 DeviceStore
+        // 的桶里，全文读写都走 `dev` 视图（见文件顶部）。这里只剩纯粹的 DOM 状态
+        // ——"这块骨架画过没有"，它与具体设备无关。
+        let sceneRendered = false;
+
+        // 设备图上方的场景徽标（图标 + 场景名）。phone.html 是在"任一口有输出"时显示，
+        // index.html 沿用同一个条件，由 updateDeviceContainer 调用。
+        function updateSceneBadge(show) {
+            const badge = document.getElementById('sceneBadgeAni');
+            if (!badge) return;
+            const opt = SCENE_OPTIONS.find(o => o.value === dev.scene) || SCENE_OPTIONS[0];
+            const icon = document.getElementById('sceneBadgeIconAni');
+            const text = document.getElementById('sceneBadgeTextAni');
+            if (icon) icon.src = `/static/plugin_imgs/main_card_scene_icon_${SCENE_BADGE_IMG[opt.value]}.png`;
+            if (text) text.textContent = I18N.t(opt.labelKey);
+            badge.classList.toggle('show', !!show);
+        }
+
+        function renderScene(settings) {
+            const grid = document.getElementById('sceneGrid');
+            if (!grid) return;
+            const raw = parseInt((settings || {})['5'], 10);
+            const current = SCENE_OPTIONS.some(o => o.value === raw) ? raw : 1;
+            if (!isRecent()) dev.scene = current;
+
+            if (!sceneRendered) {
+                grid.innerHTML = SCENE_OPTIONS.map(o => `
+                    <button type="button" class="scene-btn" data-mode="${o.value}" onclick="setScene(${o.value})">
+                        <img id="sceneImg${o.value}" src="${sceneIconSrc(o, false)}" alt="">
+                        <span class="scene-label">${I18N.t(o.labelKey)}</span>
+                    </button>`).join('');
+                sceneRendered = true;
+            }
+
+            const active = SCENE_OPTIONS.find(o => o.value === dev.scene) || SCENE_OPTIONS[0];
+            SCENE_OPTIONS.forEach(o => {
+                const btn = grid.querySelector(`.scene-btn[data-mode="${o.value}"]`);
+                if (!btn) return;
+                btn.classList.toggle('active', o.value === dev.scene);
+                const img = document.getElementById('sceneImg' + o.value);
+                if (img) img.src = sceneIconSrc(o, o.value === dev.scene);
+                const label = btn.querySelector('.scene-label');
+                if (label) label.textContent = I18N.t(o.labelKey);
+            });
+            const cur = document.getElementById('sceneCurrent');
+            if (cur) cur.textContent = I18N.t(active.labelKey);
+            const desc = document.getElementById('sceneDesc');
+            if (desc) desc.textContent = I18N.t(active.descKey);
+            // 场景名同时出现在设备图上方那枚徽标里，跟着一起换
+            updateSceneBadge(document.getElementById('sceneBadgeAni').classList.contains('show'));
+        }
+
+        // 换肤要让图标在 {dark|light} 两套里切换
+        function refreshSceneIcons() { renderScene(dev.settings); }
+
+        async function setScene(mode) {
+            markLocal();
+            dev.scene = mode;
+            renderScene(dev.settings);
+            try {
+                await api('/api/set', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ piid: SCENE_PIID, value: mode })
+                });
+            } catch (e) {
+                console.error('Set scene error:', e);
+            }
+        }
+
+        // 是否已经渲染过设置行。不能用 dev.settings 是否为空来判断：
+        // 设备未连接时 settings 就是 {}，那样会漏掉一次重渲染，切到中文后
+        // 页面上会残留英文标签（Scene Mode / Screen-Off Time …）。
+        let settingsRendered = false;
+        let powerChart = null, modalChart = null, currentModalPort = null;
+        // 图表用的端口历史序列：换设备时整份重置（见 resetChartData）
+        const portHistory = {
+            1: { voltage: [], current: [], power: [], protocol: [] },
+            2: { voltage: [], current: [], power: [], protocol: [] },
+            3: { voltage: [], current: [], power: [], protocol: [] },
+            4: { voltage: [], current: [], power: [], protocol: [] }
+        };
+
+        // ── Real-time modal chart ──
+        const REAL_TIME_WINDOW_MS = 10 * 60 * 1000;  // 保留最近10分钟
+        let modalRealTimePort = null;
+        let modalRealTimeDebounce = null;
+        let modalRealTimeTimer = null;  // 数据稳定时的后台刷新定时器
+
+        function setTimeRange(minutes) {
+            setCurrentHours(minutes / 60);
+            localStorage.setItem('cuktech-chart-hours', minutes);
+            document.querySelectorAll('.time-btn').forEach(btn => {
+                const btnMinutes = parseInt(btn.dataset.minutes, 10);
+                if (!isNaN(btnMinutes)) btn.classList.toggle('active', btnMinutes === minutes);
+            });
+            fetchChartData();
+        }
+
+        const PORT_KEY_TO_ID = { 'c1': 1, 'c2': 2, 'c3': 3, 'a': 4 };
+        let lastLocalChange = 0;
+        function markLocal() { lastLocalChange = Date.now(); }
+        function isRecent() { return Date.now() - lastLocalChange < 3000; }
+
+        // ── Charge limit card (充到指定 Wh 自动关断该端口) ──
+        let chargeLimitRendered = false;
+
+        // 轻量提示条；外观由 index.css 的 .toast 决定（与 phone.js 的 toast 同规格）
+        function showToast(msg) {
+            let el = document.getElementById('toast');
+            if (!el) {
+                el = document.createElement('div');
+                el.id = 'toast';
+                el.className = 'toast';
+                document.body.appendChild(el);
+            }
+            clearTimeout(el._timer);
+            el.textContent = msg;
+            el.classList.add('show');
+            el._timer = setTimeout(() => el.classList.remove('show'), 3000);
+        }
+
+        function renderChargeLimit() {
+            const grid = document.getElementById('chargeLimitGrid');
+            if (!grid || typeof ChargeLimit === 'undefined') return;
+            const CL = ChargeLimit;
+
+            if (!chargeLimitRendered) {
+                let html = '';
+                for (const [id, name] of Object.entries(PORT_MAP)) {
+                    const key = PORT_KEY_MAP[id];
+                    html += `
+                        <div class="charge-limit-item" id="limit-card-${key}">
+                            <div class="charge-limit-header">
+                                <span class="countdown-port ${key}">${name}</span>
+                                ${CL.modeChipsHtml(key)}
+                            </div>
+                            <div class="limit-perm-panel" id="limit-perm-${key}"></div>
+                            <div class="charge-limit-bar"><div class="charge-limit-bar-fill" id="limit-bar-${key}"></div></div>
+                            <div class="charge-limit-progress" id="limit-progress-${key}"></div>
+                            <div class="countdown-input-group">
+                                <input type="number" class="countdown-input" id="limit-wh-${key}" min="0" max="1000" step="1" placeholder="${I18N.t('chargeLimit.placeholder')}">
+                                <select class="charge-limit-mode" id="limit-mode-${key}" onchange="limitModeTouched('${key}')">
+                                    <option value="once">${I18N.t('chargeLimit.once')}</option>
+                                    <option value="always">${I18N.t('chargeLimit.always')}</option>
+                                </select>
+                            </div>
+                            <div class="countdown-quick">
+                                ${CL.QUICK_WH.map(w => `<button class="countdown-quick-btn" onclick="setChargeLimitQuick('${key}', ${w})">${w}${I18N.t('chargeLimit.unit')}</button>`).join('')}
+                                ${CL.chipHtml(key, 'full_off', 'countdown-quick-btn')}
+                            </div>
+                            <div class="countdown-actions">
+                                <button class="countdown-toggle-btn set" id="limit-btn-${key}" onclick="applyChargeLimit('${key}')">${I18N.t('chargeLimit.set')}</button>
+                                <button class="countdown-toggle-btn clear" id="limit-clear-${key}" onclick="clearChargeLimit('${key}')">${I18N.t('chargeLimit.clear')}</button>
+                            </div>
+                        </div>`;
+                }
+                grid.innerHTML = html;
+                chargeLimitRendered = true;
+            }
+            updateChargeLimitUI();
+        }
+
+        // 只刷新状态/进度与按钮，不重建 DOM（避免打断正在输入的输入框）
+        // 用户在没有能量限额时显式存过"限额模式"的端口：模式下拉此时以它为准
+        // （否则恒被"充满即停"的模式盖掉，见 updateChargeLimitUI 的 saved）。
+        // 这份偏好是每台设备各存一份的（dev.limitModeSaved），换设备不会串。
+        function updateChargeLimitUI() {
+            if (typeof ChargeLimit === 'undefined') return;
+            const CL = ChargeLimit;
+            for (const [id] of Object.entries(PORT_MAP)) {
+                const key = PORT_KEY_MAP[id];
+                const e = CL.entryFor(key);
+
+                // "已配置"= 有能量限额 / 充满即停 / 长期供电：进度条与状态点共用同一判定
+                const armed = CL.isArmed(key);
+
+                const progressEl = document.getElementById(`limit-progress-${key}`);
+                if (progressEl) {
+                    const p = CL.progressText(key);
+                    progressEl.textContent = p;
+                    progressEl.style.visibility = p ? 'visible' : 'hidden';
+                }
+
+                const barEl = document.getElementById(`limit-bar-${key}`);
+                if (barEl) {
+                    barEl.style.width = CL.progressPct(key) + '%';
+                    barEl.style.background = armed ? 'var(--port-' + key + ')' : 'transparent';
+                }
+
+                // 不覆盖用户正在编辑的输入框
+                const inputEl = document.getElementById(`limit-wh-${key}`);
+                if (inputEl && document.activeElement !== inputEl) {
+                    inputEl.value = e.wh > 0 ? e.wh : '';
+                }
+                // 模式下拉：用户改过但还没保存时不能被 5s 轮询覆盖回旧值，只有
+                // "后端值追上了当前选择"（保存成功）才解除保护。
+                const modeEl = document.getElementById(`limit-mode-${key}`);
+                if (modeEl) {
+                    // 模式下拉的"真值"：有能量限额时是限额的模式；没有限额时显示
+                    // "自动"的模式——否则开了自动、刷新后又被打回限额的旧模式。
+                    // 用户显式存过限额模式时以它为准：否则开了"充满即停"后，
+                    // 下拉恒显示 full_off 的模式，刚存好的限额模式会被立刻弹回。
+                    const saved = (e.wh > 0 || dev.limitModeSaved[key]
+                                   ? e.mode
+                                   : (CL.fullOffMode(key) || e.mode)) || 'once';
+                    if (modeEl.dataset.touched) {
+                        if (modeEl.value === saved) modeEl.dataset.touched = '';
+                    } else {
+                        modeEl.value = saved;
+                    }
+                }
+
+                updatePortModeUI(CL, key);
+            }
+        }
+
+        // 两枚端口模式开关（常供 / 充满即停）：只切 class 与 aria，不重建 DOM。
+        // 常供开启时"充满即停"置灰——互斥由后端强制，前端只做可见性提示。
+        // 状态编码沿用指示点那套：圆点空心=关、实心=开、警示色=本次已充满断电。
+        function updatePortModeUI(CL, key) {
+            const perm = CL.isPermanent(key);
+            const full = CL.isFullOff(key);
+            const fired = CL.fullOffFired(key);
+            const permBtn = document.getElementById(`mode-permanent-${key}`);
+            const fullBtn = document.getElementById(`mode-full_off-${key}`);
+            // 长期供电：整张卡收起限额控件，只留"已充多少"与这枚开关（见 index.css）
+            const card = document.getElementById(`limit-card-${key}`);
+            if (card) card.classList.toggle('is-permanent', perm);
+            // 卡头那个端口色点：这一口此刻真的在供电 → 呼吸动效。面板里只放统计值，
+            // "现在在不在供电"就由这个点表达（比一行"供电中"更省地方也更直观）。
+            // 注意：本函数作用域里没有外层循环的 entry 变量，必须自己 entryFor(key)。
+            // 写成裸 e 会抛 ReferenceError 并中断整段 updateChargeLimitUI ——
+            // is-permanent 已经打上、面板却没填，卡片就变成"只有标题的空卡"。
+            const nameEl = card && card.querySelector('.countdown-port');
+            if (nameEl) nameEl.classList.toggle('is-live', !!CL.entryFor(key).is_charging);
+            const panel = document.getElementById(`limit-perm-${key}`);
+            if (panel) {
+                if (perm) {
+                    // 只在内容真的变了才重建：本函数被 5s 轮询/SSE 全量调用，
+                    // 每帧 innerHTML 重建会持续销毁并重建 ring 与统计节点。
+                    const html = CL.permanentPanelHtml(key);
+                    if (panel.dataset.html !== html) {
+                        panel.dataset.html = html;
+                        panel.innerHTML = html;
+                    }
+                } else if (panel.innerHTML) {
+                    panel.innerHTML = '';
+                    panel.dataset.html = '';
+                }
+            }
+            if (permBtn) {
+                permBtn.classList.toggle('is-on', perm);
+                permBtn.setAttribute('aria-checked', perm ? 'true' : 'false');
+                permBtn.title = perm ? I18N.t('chargeLimit.permanentOff') : I18N.t('chargeLimit.permanentHint');
+            }
+            if (fullBtn) {
+                fullBtn.classList.toggle('is-on', full);
+                fullBtn.classList.toggle('is-fired', full && fired);
+                fullBtn.setAttribute('aria-checked', full ? 'true' : 'false');
+                fullBtn.disabled = perm;
+                fullBtn.classList.toggle('is-disabled', perm);
+                const fMode = CL.fullOffMode(key) === CL.MODE_ALWAYS
+                    ? I18N.t('chargeLimit.always') : I18N.t('chargeLimit.once');
+                fullBtn.title = perm ? I18N.t('chargeLimit.permanentConflict')
+                    : (full ? fMode + ' · ' : '')
+                      + (fired ? I18N.t('chargeLimit.fullOffFired') : I18N.t('chargeLimit.fullOffHint'));
+            }
+        }
+
+        async function refreshChargeLimit() {
+            if (typeof ChargeLimit === 'undefined') return;
+            await Promise.all([ChargeLimit.fetchLimits(), ChargeLimit.fetchPortModes()]);
+            updateChargeLimitUI();
+        }
+
+        function setChargeLimitQuick(port, wh) {
+            const input = document.getElementById(`limit-wh-${port}`);
+            if (input) input.value = wh;
+            applyChargeLimit(port);
+        }
+
+        // 用户动了模式下拉：置保护位，等保存成功（或后端值追上）再放开
+        function limitModeTouched(port) {
+            const el = document.getElementById(`limit-mode-${port}`);
+            if (el) el.dataset.touched = '1';
+        }
+
+        async function applyChargeLimit(port) {
+            const input = document.getElementById(`limit-wh-${port}`);
+            const modeEl = document.getElementById(`limit-mode-${port}`);
+            const wh = ChargeLimit.parseWhInput(input ? input.value : '');
+            if (wh === null) {
+                // 只改了模式（没填阈值）：存模式即可——当前本来就没有限额，wh=0
+                // 不改变限额值，只是让这个偏好落库、不再被轮询打回。
+                const entry = ChargeLimit.entryFor(port);
+                const mode = modeEl ? modeEl.value : null;
+                // 没有能量限额时下拉显示的是"充满即停"的模式，此时存限额的 mode
+                // 会被下一次轮询弹回去（用户只看到"模式已保存"然后回滚）。
+                // 直接走端口模式接口，改的就是下拉真正代表的那个值。
+                if (modeEl && !(entry.wh > 0) && ChargeLimit.isFullOff(port)
+                        && mode && mode !== ChargeLimit.fullOffMode(port)) {
+                    modeEl.dataset.touched = '1';
+                    const r = await ChargeLimit.savePortMode(port, 'full_off', true, mode);
+                    modeEl.dataset.touched = '';
+                    if (r.error !== 'pending') {
+                        showToast(r.ok ? I18N.t('chargeLimit.modeSaved')
+                                       : I18N.t('chargeLimit.saveFailed', { msg: r.error }));
+                    }
+                    updateChargeLimitUI();
+                    return;
+                }
+                if (modeEl && !(entry.wh > 0) && !ChargeLimit.isFullOff(port)
+                        && mode !== (entry.mode || 'once')) {
+                    modeEl.dataset.touched = '1';
+                    const r = await ChargeLimit.saveLimit(port, 0, mode);
+                    // 同端口已有请求在途时 saveLimit 返回 state（无 ok/error）：
+                    // 不是失败，不该弹提示，也不能解除保护位。
+                    if (!r || r.ok === undefined) return;
+                    modeEl.dataset.touched = '';
+                    if (r.ok) dev.limitModeSaved[port] = true;
+                    showToast(r.ok ? I18N.t('chargeLimit.modeSaved')
+                                   : I18N.t('chargeLimit.saveFailed', { msg: r.error }));
+                    updateChargeLimitUI();
+                    return;
+                }
+                showToast(I18N.t('chargeLimit.saveFailed', { msg: I18N.t('chargeLimit.placeholder') }));
+                return;
+            }
+            if (modeEl) modeEl.dataset.touched = '1';
+            const res = await ChargeLimit.saveLimit(port, wh, modeEl ? modeEl.value : null);
+            if (res.ok) {
+                if (modeEl) modeEl.dataset.touched = '';
+                showToast(wh > 0 ? I18N.t('chargeLimit.saved') : I18N.t('chargeLimit.cleared'));
+            } else {
+                if (modeEl) modeEl.dataset.touched = '';
+                showToast(I18N.t('chargeLimit.saveFailed', { msg: res.error }));
+            }
+            updateChargeLimitUI();
+        }
+
+        async function clearChargeLimit(port) {
+            const res = await ChargeLimit.saveLimit(port, 0, null);
+            if (res.ok) {
+                const modeEl = document.getElementById(`limit-mode-${port}`);
+                if (modeEl) modeEl.dataset.touched = '';
+                showToast(I18N.t('chargeLimit.cleared'));
+            } else {
+                showToast(I18N.t('chargeLimit.saveFailed', { msg: res.error }));
+            }
+            updateChargeLimitUI();
+        }
+
+        // ══════════════════════════════════════════════════════════
+        //  分段控件（tab list）的滑动指示块
+        //
+        //  为什么量位置而不是写死 nth-child：同一个组件里按钮宽度不等
+        //  （30分 / 24小时、W / V / A、"按端口 / 每小时 / 快充协议"），切语言后文字宽度
+        //  还会再变一次，而 ≤640px 时按钮又是 flex:1 均分。两个观察器兜住所有变化：
+        //  class 变了（选中项切换）、盒子尺寸变了（换语言 / 换行 / 缩放）。
+        // ══════════════════════════════════════════════════════════
+        function initSegmentedControl(seg) {
+            if (!seg || seg.dataset.segReady) return;
+            seg.dataset.segReady = '1';
+            const thumb = document.createElement('span');
+            thumb.className = 'seg-thumb';
+            thumb.setAttribute('aria-hidden', 'true');
+            seg.insertBefore(thumb, seg.firstChild);
+
+            function sync() {
+                const active = seg.querySelector('.time-btn.active');
+                // 没有任何选中项（比如时间档位还没初始化）或按钮不可见：收起滑块
+                if (!active || !active.offsetWidth) { thumb.style.opacity = '0'; return; }
+                const sr = seg.getBoundingClientRect();
+                const ar = active.getBoundingClientRect();
+                const cs = getComputedStyle(seg);
+                // 绝对定位的基准是 padding box，所以要减掉容器自己的边框
+                const bx = parseFloat(cs.borderLeftWidth) || 0;
+                const by = parseFloat(cs.borderTopWidth) || 0;
+                thumb.style.width = ar.width + 'px';
+                thumb.style.height = ar.height + 'px';
+                thumb.style.transform = `translate(${ar.left - sr.left - bx}px, ${ar.top - sr.top - by}px)`;
+                thumb.style.opacity = '1';
+            }
+
+            sync();
+            // 首帧之后再打开过渡，否则初始化时滑块会从原点滑过来
+            window.requestAnimationFrame(() => seg.classList.add('is-ready'));
+            new MutationObserver(sync).observe(seg, {
+                subtree: true, attributes: true, attributeFilter: ['class'],
+            });
+            if (typeof ResizeObserver !== 'undefined') new ResizeObserver(sync).observe(seg);
+            window.addEventListener('resize', sync);
+        }
+
+        function initSegmentedControls() {
+            document.querySelectorAll('.segmented').forEach(initSegmentedControl);
+        }
+
+        // canvas 上的图表无法直接消费 CSS 变量，这里把当前外观的令牌读成具体色值
+        // （米家暗色是黑底、浅色是白底，网格线/刻度的墨色必须跟着换）。
+        function chartTheme() {
+            const cs = getComputedStyle(document.documentElement);
+            return {
+                text: cs.getPropertyValue('--text').trim() || 'rgba(255,255,255,0.9)',
+                dim: cs.getPropertyValue('--text-dim').trim() || 'rgba(255,255,255,0.4)',
+                // 网格线单独一支令牌：浅色主题下 text-dim 是 #888，直接拿来画网格太重
+                grid: cs.getPropertyValue('--chart-grid').trim() || 'rgba(255,255,255,0.14)',
+            };
+        }
+
+        // 换肤后重刷已存在的图表（颜色写死在 options 里，不会跟着 CSS 变）
+        function refreshChartTheme() {
+            const th = chartTheme();
+            [powerChart, modalChart, hourlyChart].forEach(ch => {
+                if (!ch || !ch.options) return;
+                const legend = ch.options.plugins && ch.options.plugins.legend;
+                if (legend && legend.display !== false && legend.labels) legend.labels.color = th.text;
+                const ds = ch.data && ch.data.datasets;
+                // 总功率曲线的线色/填充色来自 CSS 令牌，换肤后要重算
+                if (ds && ds[4]) {
+                    const cs3 = getComputedStyle(document.documentElement);
+                    ds[4].borderColor = cs3.getPropertyValue('--total-line').trim() || '#C084FC';
+                    ds[4].backgroundColor = cs3.getPropertyValue('--total-fill').trim() || 'rgba(192,132,252,0.16)';
+                }
+                const scales = ch.options.scales || {};
+                Object.keys(scales).forEach(k => {
+                    const sc = scales[k];
+                    if (!sc.display) return;                      // 隐藏的轴不用刷
+                    if (sc.grid && sc.grid.drawOnChartArea !== false) sc.grid.color = th.grid;
+                    // 只有标记过 __themed 的刻度跟随主题（主图与弹窗的刻度都是文字，
+                    // 统一走 --text-dim；端口身份交给曲线本身与图例）
+                    if (sc.ticks && sc.ticks.__themed) sc.ticks.color = th.dim;
+                    if (sc.title && sc.title.display) sc.title.color = th.dim;
+                });
+                ch.update('none');
+            });
+        }
+
+        // ── 功率曲线：W / V / A 三个指标共用同一份 /api/chart 响应 ──
+        // 为什么不加两张图：后端本来就在同一个响应里返回 power/voltage/current 三组序列，
+        // app.js 也一直把它们存进 portHistory，只是从来没画过。切指标 = 换序列，零新请求。
+        let chartMetric = 'power';
+        let _lastChartPayload = null;
+
+        // CSS 变量给的是 #RRGGBB，canvas 的填充色需要带 alpha 的 rgba()
+        function withAlpha(color, alpha) {
+            const m = String(color || '').trim();
+            let r, g, b;
+            if (m.charAt(0) === '#') {
+                const h = m.length === 4 ? m.slice(1).split('').map(c => c + c).join('') : m.slice(1);
+                r = parseInt(h.slice(0, 2), 16);
+                g = parseInt(h.slice(2, 4), 16);
+                b = parseInt(h.slice(4, 6), 16);
+            } else {
+                const nums = m.match(/[\d.]+/g);
+                if (!nums || nums.length < 3) return m;
+                r = Number(nums[0]); g = Number(nums[1]); b = Number(nums[2]);
+            }
+            if (!isFinite(r) || !isFinite(g) || !isFinite(b)) return m;
+            return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+        }
+
+        function initChart() {
+            const cs = getComputedStyle(document.documentElement);
+            const c1 = cs.getPropertyValue('--port-c1').trim() || '#FF7A00';
+            const c2 = cs.getPropertyValue('--port-c2').trim() || '#46B4FF';
+            const c3 = cs.getPropertyValue('--port-c3').trim() || '#89D8F3';
+            const ca = cs.getPropertyValue('--port-a').trim() || '#FFD24B';
+            // 总功率曲线（只在「总」指标模式显示）用中性墨色，避免被误认成某个端口
+            const totalLine = cs.getPropertyValue('--total-line').trim() || 'rgba(255,255,255,0.6)';
+            const totalFill = cs.getPropertyValue('--total-fill').trim() || 'rgba(255,255,255,0.10)';
+            const th = chartTheme();
+            const ctx = document.getElementById('powerChart').getContext('2d');
+            // 端口四条线**不堆叠**：堆叠面积会把每条线画在"累计高度"上（只有下面那条
+            // 带的厚度才是它自己的功率），Y 轴就读不出"这个口现在多少 W"了 —— C1≈30W、
+            // C2≈30W 时 C2 的线会落在 60W 处，看着像错值。这里要的是"每口功率"读数，
+            // 所以四条线各自对 Y 轴；"总功率"另开 Σ 模式单独画一条（见 applyChartMetric），
+            // 构成占比交给"端口功率占比"条与用电统计卡的「按端口」tab。
+            const portSeries = [[c1, 'C1'], [c2, 'C2'], [c3, 'C3'], [ca, 'A']];
+            powerChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    // 总功率那条线只在 Σ 模式显示（那里只剩它一条，走势看得清）；
+                    // 功率模式下它的数值由悬浮提示的 footer 给出，见下。
+                    datasets: portSeries.map(([color, label]) => ({
+                        label, data: [], borderColor: color,
+                        borderWidth: 1.5, tension: 0.4, pointRadius: 0, fill: false
+                    })).concat([{
+                        label: 'Total', data: [], hidden: true,
+                        borderColor: totalLine, backgroundColor: totalFill,
+                        borderWidth: 2, tension: 0.4, pointRadius: 0, fill: true
+                    }])
+                },
+                options: { responsive: true, maintainAspectRatio: false, animation: { duration: 0 }, interaction: { intersect: false, mode: 'index' },
+                    // 图例用卡片标题行里的自定义圆点（.chart-legend），Chart.js 自带的关掉
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: { callbacks: {
+                            // 总功率只在提示里给：同一份响应里的总计序列，端口的和也在里面
+                            footer: (items) => {
+                                if (!items.length || !_lastChartPayload) return '';
+                                if (chartMetric === 'total') return '';   // 这条线本身就是总功率
+                                const total = (_lastChartPayload.power[4] || {}).data;
+                                if (!total) return '';
+                                const v = total[items[0].dataIndex];
+                                return v == null ? '' : `${I18N.t('power.total')}: ${Number(v).toFixed(1)}`;
+                            },
+                        } },
+                    },
+                    scales: {
+                        // 横竖网格线都不画（phone.html 同款），Y 轴显示，只留刻度文字
+                        x: { display: true, grid: { drawOnChartArea: false }, ticks: { color: th.dim, maxTicksLimit: 8, font: { size: 9 }, maxRotation: 0, __themed: true } },
+                        y: { display: true, grid: { drawOnChartArea: false }, ticks: { color: th.dim, font: { size: 9 }, __themed: true },
+                             beginAtZero: true, grace: '8%',
+                             // 标题只在 V/A 模式显示（功率模式的单位已经在卡片标题里）
+                             title: { display: false, text: '', color: th.dim, font: { size: 9 } } }
+                    }
+                }
+            });
+            renderChartLegend();
+        }
+
+        // 切换指标：只换序列和 Y 轴语义，不重新请求
+        function setChartMetric(metric) {
+            if (['power', 'total', 'voltage', 'current'].indexOf(metric) < 0) return;
+            if (metric === chartMetric) return;
+            chartMetric = metric;
+            document.querySelectorAll('#chartMetricGroup .time-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.metric === metric);
+            });
+            // 切指标让曲线自己形变一次（250ms）：比"啪"地换一组数据更容易看懂
+            // 变的是哪条线。流式刷新仍然走 applyChartMetric() → update('none')。
+            applyChartMetric(true);
+        }
+
+        function applyChartMetric(animate) {
+            if (!powerChart || !_lastChartPayload) return;
+            const p = _lastChartPayload;
+            const ds = powerChart.data.datasets;
+            const isPower = chartMetric === 'power';
+            const isTotal = chartMetric === 'total';
+            // 「总」模式只看总功率一条线，端口的四条全部收起（stacked 也关掉，
+            // 否则总计会被当成又一摞叠上去）
+            const series = isPower ? p.power : (chartMetric === 'voltage' ? p.voltage : p.current);
+
+            powerChart.data.labels = p.labels;
+            for (let i = 0; i < 4; i++) {
+                ds[i].data = series[i].data;
+                ds[i].hidden = isTotal;
+            }
+            ds[4].data = p.power[4].data;
+            ds[4].hidden = !isTotal;
+            const yTitle = powerChart.options.scales.y.title;
+            yTitle.display = chartMetric === 'voltage' || chartMetric === 'current';
+            yTitle.text = chartMetric === 'voltage' ? 'V' : 'A';
+
+            // canvas 对读屏用户不可见：至少把"这是哪张图、什么指标"播报出去
+            const cv = document.getElementById('powerChart');
+            if (cv) {
+                cv.setAttribute('aria-label', isPower
+                    ? I18N.t('index.chartAria')
+                    : I18N.t('index.chartAriaMetric', { metric: I18N.t(metricKey(chartMetric)) }));
+            }
+            renderChartLegend();
+            if (powerChart.options.animation) powerChart.options.animation.duration = animate ? 250 : 0;
+            powerChart.update(animate ? undefined : 'none');
+        }
+
+        function metricKey(metric) {
+            return 'index.metric' + metric.charAt(0).toUpperCase() + metric.slice(1);
+        }
+
+
+        // 端口功率占比：phone.js 的 renderPowerDist 同款逻辑
+        // 一条堆叠条（每段宽度 = 该口功率/总功率，端口色）+ 底下一行标签。
+        //
+        // 标签**不再**用端口色当文字色：亮端口色在白底上只有 1.4–2.6:1（#89D8F3 1.59:1、
+        // #FFD24B 1.44:1），空载再乘 opacity .3 直接掉到 ~1.1:1，等于看不见。端口身份改由
+        // 圆点承载（图形，3:1 即可），文字统一走中性墨色——与 index.css 的令牌约定一致。
+        const PORT_DIST_META = [
+            { key: 'c1', label: 'C1', piid: 1 },
+            { key: 'c2', label: 'C2', piid: 2 },
+            { key: 'c3', label: 'C3', piid: 3 },
+            { key: 'a',  label: 'USB-A', piid: 4 }
+        ];
+
+        function renderPortShare(ports, totalPower) {
+            const bar = document.getElementById('powerDist');
+            const text = document.getElementById('powerDistText');
+            if (!bar || !text) return;
+            const cs = getComputedStyle(document.documentElement);
+            const segs = PORT_DIST_META.map(o => {
+                const p = (ports || {})[String(o.piid)] || {};
+                const w = (p.enabled !== false && p.power > 0) ? p.power : 0;
+                const color = cs.getPropertyValue('--port-' + o.key).trim() || '#888';
+                return { label: o.label, w, color };
+            });
+            const total = segs.reduce((a, x) => a + x.w, 0) || 1;
+            bar.innerHTML = segs.map(x =>
+                `<div style="width:${(x.w / total * 100).toFixed(1)}%;height:100%;background:${x.color};transition:width 0.5s;"></div>`
+            ).join('');
+            text.innerHTML = segs.map(x => {
+                const pct = (x.w / total * 100).toFixed(0);
+                // 空载只压暗文字（--text-dim），不压暗圆点：颜色本身已经是身份信息
+                return `<span class="share-item${x.w > 0 ? ' is-active' : ''}">`
+                     + `<i class="share-dot" style="background:${x.color}"></i>${x.label} ${pct}%</span>`;
+            }).join('');
+        }
+
+        // 自定义图例（圆点 + 端口名）：与 phone.html 的 .chart-legend 同款。
+        // 电压/电流模式下没有"总功率"这条线，图例必须跟着少一项，否则图例在说谎。
+        function renderChartLegend() {
+            const box = document.getElementById('chartLegend');
+            if (!box) return;
+            // 「总」模式只剩一条总功率线，图例也只留它（其余端口都收起了）
+            const items = chartMetric === 'total'
+                ? [[I18N.t('power.total'), 'var(--total-line)']]
+                : [['C1', 'var(--port-c1)'], ['C2', 'var(--port-c2)'],
+                   ['C3', 'var(--port-c3)'], ['USB-A', 'var(--port-a)']];
+            box.innerHTML = items.map(([name, color]) =>
+                `<span class="chart-legend-item"><span class="chart-legend-dot" style="background:${color}"></span>${name}</span>`
+            ).join('');
+        }
+        let _chartDataLoaded = false;
+        async function fetchChartData() {
+            try {
+                const interval = getInterval();
+                const url = `/api/chart?hours=${getCurrentHours()}&interval=${interval}`;
+                const res = await api(url);
+                if (res.status === 304) {
+                    if (!_chartDataLoaded) {
+                        // Force fetch on first load (bypass cache)
+                        const r2 = await api(url + '&_=' + Date.now());
+                        if (r2.ok) { const j2 = await r2.json(); if (j2.ok) updateChart(j2); }
+                        _chartDataLoaded = true;
+                    }
+                    return;
+                }
+                if (!res.ok) return;
+                const result = await res.json();
+                if (result.ok) { updateChart(result); _chartDataLoaded = true; }
+            } catch (e) {
+                console.error('Failed to fetch chart data:', e);
+            }
+        }
+
+        function updateChart(data) {
+            let labels = data.labels;
+            const power = data.datasets.power;
+            // Trim trailing epoch(s) where all ports have 0 power (bucket not yet populated)
+            while (labels.length > 1) {
+                const last = labels.length - 1;
+                const allZero = power.every(ds => ds.data[last] === 0);
+                if (!allZero) break;
+                labels = labels.slice(0, last);
+                for (const ds of power) ds.data = ds.data.slice(0, last);
+                for (const ds of data.datasets.voltage) ds.data = ds.data.slice(0, last);
+                for (const ds of data.datasets.current) ds.data = ds.data.slice(0, last);
+            }
+            // 三组序列都留着：切指标（W/V/A）时不再回头请求
+            _lastChartPayload = {
+                labels,
+                power,
+                voltage: data.datasets.voltage,
+                current: data.datasets.current,
+            };
+            for (let port = 1; port <= 4; port++) {
+                portHistory[port].power = power[port - 1].data.slice();
+                portHistory[port].voltage = data.datasets.voltage[port - 1].data.slice();
+                portHistory[port].current = data.datasets.current[port - 1].data.slice();
+                portHistory[port].protocol = power[port - 1].data.map(() => 'idle');
+            }
+            applyChartMetric();
+        }
+
+        // ══════════════════════════════════════════════════════════
+        //  用电统计卡（按端口构成 / 每小时用电 / 快充协议分布）
+        //
+        //  三个视图共用"周期"与合计值，所以塞进同一张卡用 tab 切换：拆成三张卡会变成
+        //  三个各自为政的周期下拉，左栏还要多算两套卡框高度。
+        //  数据来源（都不需要新增采样，只是把已经存在、前端一直没用的数据画出来）：
+        //    · /api/energy/stats      → 按端口 Wh / 次数 / 占比（by_port 之前被 renderStats 丢掉）
+        //    · /api/energy/protocols  → 按协议 Wh / 次数（服务端 GROUP BY；前端拉 /api/sessions
+        //                               单页只有 50 条，今日就有 120+ 条会话，自己算必然是错的）
+        //    · /api/chart?hours=24&interval=3600 → 近 24h 每小时平均功率（1h 桶里数值即 Wh）
+        // ══════════════════════════════════════════════════════════
+        const ENERGY_TABS = ['ports', 'hourly', 'protocols'];
+        const ENERGY_PORTS = [
+            { id: 1, key: 'c1', label: 'C1' },
+            { id: 2, key: 'c2', label: 'C2' },
+            { id: 3, key: 'c3', label: 'C3' },
+            { id: 4, key: 'a',  label: 'USB-A' },
+        ];
+        // 协议名 → 颜色令牌（--proto-*）。这组色只给堆叠条和圆点用（图形，3:1 即可），
+        // 文字一律中性墨色：亮端口色当小字在白底只有 1.4–2.6:1，两套主题各配一版。
+        const PROTO_TOKENS = { PD: 'pd', PPS: 'pps', UFCS: 'ufcs', SCP: 'scp' };
+
+        let energyTab = 'ports';
+        let energyPeriod = 'today';
+        let energyStats = null;
+        let energyProto = null;
+        let energyHourlyLoaded = false;
+        let hourlyChart = null;
+        let _energySeq = 0;   // 切周期时丢弃过期响应，避免慢响应把新数据覆盖回去
+
+        function energyProtoColor(name) {
+            const cs = getComputedStyle(document.documentElement);
+            const tok = PROTO_TOKENS[String(name || '').toUpperCase()];
+            const fallback = cs.getPropertyValue('--proto-other').trim()
+                || cs.getPropertyValue('--text-dim').trim() || '#888';
+            if (!tok) return fallback;
+            return cs.getPropertyValue('--proto-' + tok).trim() || fallback;
+        }
+
+        function setEnergyTab(tab) {
+            if (ENERGY_TABS.indexOf(tab) < 0) return;
+            energyTab = tab;
+            try { localStorage.setItem('cuktech-energy-tab', tab); } catch (e) {}
+            document.querySelectorAll('#energyTabs .time-btn').forEach(b => {
+                b.classList.toggle('active', b.dataset.energyTab === tab);
+            });
+            document.querySelectorAll('[data-energy-pane]').forEach(p => {
+                p.classList.toggle('is-active', p.dataset.energyPane === tab);
+            });
+            renderEnergy();
+            // 小时视图的 canvas 在隐藏时量到的尺寸是 0，所以首次可见时才建图
+            if (tab === 'hourly') fetchEnergyHourly();
+        }
+
+        async function refreshEnergyCard(period) {
+            if (period) energyPeriod = period;
+            const seq = ++_energySeq;
+            try {
+                const res = await api(`/api/energy/stats?period=${energyPeriod}`);
+                const stats = await res.json();
+                if (seq !== _energySeq) return;
+                energyStats = stats;
+            } catch (e) { console.error('Energy stats error:', e); }
+            try {
+                const res = await api(`/api/energy/protocols?period=${energyPeriod}`);
+                const proto = await res.json();
+                if (seq !== _energySeq) return;
+                energyProto = proto;
+            } catch (e) { console.error('Energy protocol error:', e); }
+            renderEnergy();
+            if (energyHourlyLoaded) fetchEnergyHourly();
+        }
+
+        // 一行三格：圆点+名称 / 次数·占比 / 电量。环已经承担了占比，行内不再画进度条
+        // （同一件事画两遍正是这张卡原来"吵"的主因）；电量单独右对齐成一列，便于扫读。
+        function energyRow(label, color, wh, count, share, isActive) {
+            const live = isActive ? '<i class="energy-live"></i>' : '';
+            const cls = wh > 0 ? 'energy-row' : 'energy-row is-zero';
+            const pct = Math.round(share * 100);
+            return `<div class="${cls}">
+                <span class="energy-name"><i class="energy-dot" style="background:${color}"></i>${label}${live}</span>
+                <span class="energy-meta">${I18N.t('energy.count', { count: count || 0 })} · ${pct}%</span>
+                <span class="energy-val">${wh.toFixed(1)}<i>Wh</i></span>
+            </div>`;
+        }
+
+        // 环形占比：SVG 画弧。段与段之间留 2.5px 缝（相邻段色相接近时不会连成一片）；
+        // 圆心放"主导项占比 + 名称"——卡头已经有合计值，这里不重复它。
+        const RING_SIZE = 92, RING_STROKE = 11, RING_GAP = 2.5;
+        function renderEnergyRing(el, items) {
+            if (!el) return;
+            const total = items.reduce((a, x) => a + x.wh, 0);
+            const parts = items.filter(x => x.wh > 0);
+            if (!(total > 0) || !parts.length) { el.innerHTML = ''; return; }
+            const r = (RING_SIZE - RING_STROKE) / 2;
+            const c = 2 * Math.PI * r;
+            const mid = RING_SIZE / 2;
+            let travelled = 0;
+            const arcs = parts.map(x => {
+                const share = x.wh / total;
+                const len = Math.max(c * share - RING_GAP, 0.6);
+                const arc = `<circle cx="${mid}" cy="${mid}" r="${r}" fill="none" stroke="${x.color}"
+                    stroke-width="${RING_STROKE}"
+                    stroke-dasharray="${len.toFixed(2)} ${(c - len).toFixed(2)}"
+                    stroke-dashoffset="${(-travelled).toFixed(2)}"></circle>`;
+                travelled += c * share;
+                return arc;
+            }).join('');
+            const dom = parts.reduce((a, b) => (b.wh > a.wh ? b : a));
+            el.innerHTML = `<svg viewBox="0 0 ${RING_SIZE} ${RING_SIZE}" aria-hidden="true">
+                <circle cx="${mid}" cy="${mid}" r="${r}" fill="none"
+                        stroke="var(--ring-track)" stroke-width="${RING_STROKE}"></circle>
+                ${arcs}
+                <text x="${mid}" y="${mid}" text-anchor="middle" dominant-baseline="central"
+                      font-size="19" font-weight="600" fill="var(--text)">${Math.round(dom.wh / total * 100)}%</text>
+                <text x="${mid}" y="${mid + 18}" text-anchor="middle" font-size="10"
+                      fill="var(--text-dim)">${dom.label}</text>
+            </svg>`;
+        }
+
+        function renderEnergy() {
+            const label = document.getElementById('energyTotal');
+            const total = energyStats ? (energyStats.total_wh || 0) : null;
+            if (label) {
+                label.textContent = (total === null)
+                    ? I18N.t('charge.' + energyPeriod)
+                    : I18N.t('energy.total', {
+                        period: I18N.t('charge.' + energyPeriod),
+                        wh: total.toFixed(1),
+                    });
+            }
+
+            const byPort = (energyStats && energyStats.by_port) || {};
+            const portItems = ENERGY_PORTS.map(p => {
+                const e = byPort[String(p.id)] || {};
+                return { label: p.label, color: `var(--port-${p.key})`,
+                         wh: e.wh || 0, count: e.count || 0, active: !!e.is_active };
+            });
+            renderEnergyRing(document.getElementById('energyPortRing'), portItems);
+            const portRows = document.getElementById('energyPortRows');
+            if (portRows) {
+                const sum = portItems.reduce((a, x) => a + x.wh, 0);
+                portRows.innerHTML = sum > 0
+                    ? portItems.map(x => energyRow(x.label, x.color, x.wh, x.count, x.wh / sum, x.active)).join('')
+                    : `<div class="empty-state">${I18N.t('energy.noData')}</div>`;
+            }
+
+            const protoItems = ((energyProto && energyProto.protocols) || []).map(p => ({
+                label: String(p.protocol).toLowerCase() === 'unknown'
+                    ? I18N.t('energy.unknown')
+                    : String(p.protocol).toUpperCase(),
+                color: energyProtoColor(p.protocol),
+                wh: p.wh || 0, count: p.count || 0, active: !!p.is_active,
+            }));
+            renderEnergyRing(document.getElementById('energyProtoRing'), protoItems);
+            const protoRows = document.getElementById('energyProtoRows');
+            if (protoRows) {
+                const sum = protoItems.reduce((a, x) => a + x.wh, 0);
+                protoRows.innerHTML = sum > 0
+                    ? protoItems.map(x => energyRow(x.label, x.color, x.wh, x.count, x.wh / sum, x.active)).join('')
+                    : `<div class="empty-state">${I18N.t('energy.noData')}</div>`;
+            }
+        }
+
+        async function fetchEnergyHourly() {
+            try {
+                const res = await api('/api/chart?hours=24&interval=3600');
+                const data = await res.json();
+                if (!data || !data.ok) return;
+                energyHourlyLoaded = true;
+                renderHourlyChart(data);
+            } catch (e) { console.error('Hourly energy error:', e); }
+        }
+
+        function renderHourlyChart(data) {
+            const cv = document.getElementById('hourlyChart');
+            if (!cv) return;
+            const th = chartTheme();
+            const cs = getComputedStyle(document.documentElement);
+            // 柱色取 --chart-bar：与右侧"当前总功率"卡的迷你柱状图同一个蓝（--port-c2），
+            // 两处用电图形用同一套颜色语言。
+            const barColor = cs.getPropertyValue('--chart-bar').trim() || '#46B4FF';
+            // 1 小时桶里接口给的是 AVG(power) → 数值即该小时的电量 Wh
+            const values = data.datasets.power[4].data.map(v => Math.round(v * 10) / 10);
+            const labels = data.labels.map(s => String(s).slice(-5, -3));
+            if (!hourlyChart) {
+                hourlyChart = new Chart(cv.getContext('2d'), {
+                    type: 'bar',
+                    data: { labels, datasets: [{
+                        data: values, backgroundColor: barColor,
+                        borderRadius: 3, borderSkipped: false, maxBarThickness: 20,
+                    }] },
+                    options: {
+                        responsive: true, maintainAspectRatio: false, animation: { duration: 0 },
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: { callbacks: {
+                                title: items => `${items[0].label}:00`,
+                                label: ctx => `${Number(ctx.parsed.y).toFixed(1)} Wh`,
+                            } },
+                        },
+                        scales: {
+                            x: { grid: { display: false }, ticks: { color: th.dim, font: { size: 9 }, maxRotation: 0, maxTicksLimit: 8, __themed: true } },
+                            y: { beginAtZero: true, grid: { drawOnChartArea: false }, ticks: { color: th.dim, font: { size: 9 }, maxTicksLimit: 4, __themed: true } },
+                        },
+                    },
+                });
+            } else {
+                hourlyChart.data.labels = labels;
+                hourlyChart.data.datasets[0].data = values;
+                hourlyChart.update('none');
+            }
+        }
+
+        // 导出当前打开的这次会话（/api/sessions/{id}/export）。
+        // 用隐藏 <a download> 而不是 location.href：万一服务端没带 Content-Disposition，
+        // href 会把整页导航走，而 a[download] 只下载。
+        function exportSessionCsv() {
+            const sid = (typeof _currentSessionId !== 'undefined') ? _currentSessionId : null;
+            if (!sid) return;
+            const a = document.createElement('a');
+            a.href = DeviceStore.url(`/api/sessions/${sid}/export`);
+            a.download = '';
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        }
+
+        // ── Real-time modal chart ──
+        function toggleModalRealTime() {
+            const btn = document.getElementById('modalRealTimeBtn');
+            if (modalRealTimePort !== null) {
+                modalRealTimePort = null;
+                btn.classList.remove('active');
+                btn.textContent = I18N.t('modal.realtime');
+                if (modalRealTimeDebounce) { clearTimeout(modalRealTimeDebounce); modalRealTimeDebounce = null; }
+                if (modalRealTimeTimer) { clearInterval(modalRealTimeTimer); modalRealTimeTimer = null; }
+                if (currentModalPort) updateModalChart();
+            } else {
+                modalRealTimePort = currentModalPort;
+                btn.classList.add('active');
+                btn.textContent = I18N.t('modal.realtimeStop');
+                // 后台 2 秒刷新：数据到达时会通过 500ms 去抖更快更新，无数据时图表保持最新
+                if (modalRealTimeTimer) clearInterval(modalRealTimeTimer);
+                modalRealTimeTimer = setInterval(_updateRealTimeModalChart, 2000);
+                _updateRealTimeModalChart();
+            }
+        }
+
+        function _buildRealTimeLabels(buf, offset, count) {
+            return buf.slice(offset, offset + count).map(e => {
+                const d = new Date(e.ts);
+                return String(d.getHours()).padStart(2,'0') + ':' +
+                       String(d.getMinutes()).padStart(2,'0') + ':' +
+                       String(d.getSeconds()).padStart(2,'0');
+            });
+        }
+
+        function _accumulateRealTimeData(portId, data) {
+            const ts = Date.now();
+            const buf = dev.realTimeBuf[portId];
+            buf.push({ ts, voltage: data.voltage, current: data.current, power: data.power, protocol: data.protocol });
+            const cutoff = ts - REAL_TIME_WINDOW_MS;
+            while (buf.length > 0 && buf[0].ts < cutoff) buf.shift();
+            // 弹窗实时模式下，对应当前端口的数据到达时去抖更新图表
+            if (modalRealTimePort !== null && portId === modalRealTimePort) {
+                if (modalRealTimeDebounce) clearTimeout(modalRealTimeDebounce);
+                modalRealTimeDebounce = setTimeout(() => {
+                    modalRealTimeDebounce = null;
+                    _updateRealTimeModalChart();
+                }, 500);
+            }
+        }
+
+        function _updateRealTimeModalChart() {
+            if (!currentModalPort || !modalChart || modalRealTimePort === null) return;
+            const buf = dev.realTimeBuf[currentModalPort];
+            if (!buf || buf.length < 1) return;
+            // ── 更新弹窗顶部的瞬时值 ──
+            const rt = dev.ports[currentModalPort];
+            if (rt) {
+                document.getElementById('modalVoltage').textContent = rt.voltage.toFixed(1);
+                document.getElementById('modalCurrent').textContent = rt.current.toFixed(2);
+                document.getElementById('modalPower').textContent = rt.power.toFixed(1);
+                const protocolEl = document.getElementById('modalProtocol');
+                if (protocolEl) {
+                    protocolEl.textContent = rt.protocol || 'idle';
+                    protocolEl.style.color = (rt.protocol && rt.protocol !== 'idle') ? 'var(--accent-ink)' : 'var(--text-dim)';
+                }
+            }
+            // ── 更新图表曲线 ──
+            const MAX_VISIBLE = 120;
+            const showBuf = buf.slice(-MAX_VISIBLE);
+            const padding = MAX_VISIBLE - showBuf.length;
+            const padLabels = new Array(padding).fill('--:--:--');
+            const padZeros = new Array(padding).fill(0);
+            const realLabels = _buildRealTimeLabels(showBuf, 0, showBuf.length);
+            modalChart.data.labels = [...padLabels, ...realLabels];
+            modalChart.data.datasets[0].data = [...padZeros, ...showBuf.map(e => e.voltage)];
+            modalChart.data.datasets[1].data = [...padZeros, ...showBuf.map(e => e.current)];
+            modalChart.data.datasets[2].data = [...padZeros, ...showBuf.map(e => e.power)];
+            modalChart.update('none');
+        }
+
+        function initModalChart() {
+            if (modalChart) modalChart.destroy();
+            const colors = getChartColors();
+            const th = chartTheme();
+            const ctx = document.getElementById('modalChart').getContext('2d');
+            modalChart = new Chart(ctx, {
+                type: 'line',
+                data: { labels: [], datasets: [
+                    { label: I18N.t('modal.voltage'), data: [], borderColor: colors.c1, borderWidth: 2, tension: 0.4, pointRadius: 0, fill: false, yAxisID: 'y' },
+                    { label: I18N.t('modal.current'), data: [], borderColor: colors.c3, borderWidth: 2, tension: 0.4, pointRadius: 0, fill: false, yAxisID: 'y' },
+                    { label: I18N.t('modal.power'), data: [], borderColor: colors.a, borderWidth: 2, tension: 0.4, pointRadius: 0, fill: false, yAxisID: 'y1' },
+                ]},
+                options: { responsive: true, maintainAspectRatio: false, animation: { duration: 0 }, interaction: { intersect: false, mode: 'index' },
+                    plugins: { legend: { display: true, position: 'top', labels: { color: colors.textDim, usePointStyle: true, pointStyle: 'circle', boxWidth: 8, boxHeight: 8, font: { size: 11 }, padding: 12 } } },
+                    scales: { x: { display: true, grid: { drawOnChartArea: false }, ticks: { color: th.dim, maxTicksLimit: 8, font: { size: 9 }, maxRotation: 0, __themed: true } },
+                        // 刻度数字是文字，走 --text-dim（跟随主题）；V/A 与 W 的归属由轴标题和
+                        // 曲线颜色表达。原来按端口色画刻度：浅色主题下 #FFD24B 在白底只有 1.44:1、
+                        // #FF7A00 2.61:1，右轴数字基本看不见。
+                        y: { type: 'linear', display: true, position: 'left', grid: { drawOnChartArea: false }, ticks: { color: th.dim, font: { size: 10 }, __themed: true }, beginAtZero: true, title: { display: true, text: 'V / A', color: colors.textDim } },
+                        y1: { type: 'linear', display: true, position: 'right', grid: { drawOnChartArea: false }, ticks: { color: th.dim, font: { size: 10 }, __themed: true }, beginAtZero: true, title: { display: true, text: 'W', color: colors.textDim } }
+                    }
+                }
+            });
+        }
+
+        function openModal(portId) {
+            currentModalPort = portId;
+            const titleEl = document.getElementById('modalTitle');
+            // Keep the data-i18n-params in sync so a later applyTranslations
+            // (e.g. server language applied at page load) re-translates the title
+            // with the actually open port instead of the static default.
+            titleEl.setAttribute('data-i18n-params', JSON.stringify({ port: PORT_MAP[portId] }));
+            titleEl.textContent = I18N.t('modal.portDetail', { port: PORT_MAP[portId] });
+            // 端口身份交给标题前的一枚圆点（图形，浅色下靠内描边撑轮廓），
+            // 文字保持中性墨色：端口色当文字色在浅色下只有 1.4–2.6:1，根本读不出来。
+            titleEl.style.removeProperty('color');
+            titleEl.style.setProperty('--port-color', `var(--port-${PORT_KEY_MAP[portId]})`);
+            initModalChart();
+            updateModalChart();
+            renderModalProtocols();
+            document.getElementById('portModal').classList.add('show');
+        }
+
+        function renderModalProtocols() {
+            const container = document.getElementById('modalProtocols');
+            if (!container) return;
+            const portKey = PORT_KEY_MAP[currentModalPort];
+            const sw = dev.protocolSwitches[portKey];
+            if (!sw) {
+                container.innerHTML = `<div class="proto-title">${I18N.t('modal.noData')}</div>`;
+                return;
+            }
+            const protoKeys = Object.keys(sw);
+            const labels = { pd: 'PD', pps: 'PPS', ufcs: 'UFCS', scp: 'SCP' };
+            let html = `<div class="proto-title">${I18N.t('modal.protocolSwitch')}</div><div class="proto-btns">`;
+            for (const pk of protoKeys) {
+                // PD 关闭时隐藏 PPS 按钮
+                if ((portKey === 'c1' || portKey === 'c2') && pk === 'pps' && !sw.pd) continue;
+                const on = sw[pk];
+                const cls = on ? 'proto-btn on' : 'proto-btn';
+                html += `<button class="${cls}" data-port="${portKey}" data-proto="${pk}" onclick="toggleProtocol(this)">${labels[pk] || pk}</button>`;
+            }
+            html += '</div>';
+            if (portKey === 'c1' || portKey === 'c2') {
+                html += `<div style="font-size:10px;color:var(--text-dim);margin-top:6px;">${I18N.t('modal.ppsNote')}</div>`;
+            } else {
+                html += `<div style="font-size:10px;color:var(--text-dim);margin-top:6px;">${I18N.t('modal.replugNote')}</div>`;
+            }
+            container.innerHTML = html;
+        }
+
+        async function toggleProtocol(btn) {
+            if (btn.disabled) return;
+            btn.disabled = true;
+            const port = btn.dataset.port;
+            const proto = btn.dataset.proto;
+            // 按钮当前是否开启（渲染 state 的唯一权威来源）。用显式 action
+            // (on/off) 而非后端 toggle，并让乐观更新写入这个确定值——
+            // 避免「SSE 广播已成真→前端再用 ! 反转」的竞态把按钮状态改回错误值，
+            // 导致需刷新页面才显示正确（ha 侧改协议走纯 SSE 无此问题）。
+            const wasOn = !!(dev.protocolSwitches[port] && dev.protocolSwitches[port][proto]);
+            const action = wasOn ? 'off' : 'on';
+            try {
+                const res = await api('/api/protocol', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ port, protocol: proto, action })
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    // 显式设置确定值（而非 ! 取反），与 SSE 广播收敛到同一结果，顺序无关
+                    if (dev.protocolSwitches[port]) dev.protocolSwitches[port][proto] = action === 'on';
+                    renderModalProtocols();
+                }
+            } catch (e) { console.error('Protocol toggle error:', e); }
+            finally { btn.disabled = false; }
+        }
+
+        function closeModal() {
+            document.getElementById('portModal').classList.remove('show');
+            currentModalPort = null;
+            // 关闭弹窗时自动退出实时曲线模式
+            if (modalRealTimePort !== null) {
+                const btn = document.getElementById('modalRealTimeBtn');
+                if (btn) { btn.classList.remove('active'); btn.textContent = I18N.t('modal.realtime'); }
+                modalRealTimePort = null;
+                if (modalRealTimeDebounce) { clearTimeout(modalRealTimeDebounce); modalRealTimeDebounce = null; }
+                if (modalRealTimeTimer) { clearInterval(modalRealTimeTimer); modalRealTimeTimer = null; }
+            }
+        }
+
+        function updateModalChart() {
+            if (!currentModalPort || !modalChart) return;
+            if (modalRealTimePort !== null) { _updateRealTimeModalChart(); return; }
+            const h = portHistory[currentModalPort];
+            modalChart.data.labels = [...powerChart.data.labels.slice(-h.voltage.length)];
+            modalChart.data.datasets[0].data = [...h.voltage];
+            modalChart.data.datasets[1].data = [...h.current];
+            modalChart.data.datasets[2].data = [...h.power];
+            modalChart.update('none');
+            // Use real-time data if chart history is empty
+            const rt = dev.ports[currentModalPort];
+            document.getElementById('modalVoltage').textContent = (rt ? rt.voltage : (h.voltage[h.voltage.length - 1] || 0)).toFixed(1);
+            document.getElementById('modalCurrent').textContent = (rt ? rt.current : (h.current[h.current.length - 1] || 0)).toFixed(2);
+            document.getElementById('modalPower').textContent = (rt ? rt.power : (h.power[h.power.length - 1] || 0)).toFixed(1);
+            const protocolEl = document.getElementById('modalProtocol');
+            if (protocolEl) {
+                const portData = dev.ports[currentModalPort];
+                const lastProtocol = portData ? portData.protocol : 'idle';
+                protocolEl.textContent = lastProtocol;
+                protocolEl.style.color = lastProtocol !== 'idle' ? 'var(--accent-ink)' : 'var(--text-dim)';
+            }
+        }
+
+        document.getElementById('portModal').addEventListener('click', function(e) { if (e.target === this) closeModal(); });
+        document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeModal(); });
+
+        async function fetchStatus() {
+            // 请求发出时锁定的设备：回来时用户可能已经切走了，那份响应属于上一台，
+            // 落到新设备的桶里就是串台（而且界面上会看到别人的读数一闪）。
+            const wanted = DeviceStore.current();
+            try {
+                const res = await api('/api/status');
+                const data = await res.json();
+                if (DeviceStore.current() !== wanted) return;
+                updateUI(data);
+            } catch (e) { console.error('Fetch error:', e); }
+        }
+
+        function updateUI(data) {
+            dev.connected = !!data.connected;
+            dev.authenticated = !!data.authenticated;
+            dev.bleConnected = !!(data.connected && data.authenticated);
+            dev.ports = data.ports || {};
+            if (data.settings) dev.settings = data.settings;
+            if (data.firmware_version) dev.firmware = data.firmware_version;
+            if (data.protocol_switches) dev.protocolSwitches = data.protocol_switches;
+            if (data.protocol_extend !== undefined) dev.protocolExtend = data.protocol_extend;
+            updateStatusBadge(data.connected, data.authenticated);
+            updateBleButton();
+            renderPorts(data.ports);
+            updateDeviceContainer(data.ports);
+            updateSettingsUI(data.settings || {});
+            renderCountdown(data.settings || {});
+            renderScene(data.settings || {});
+            updateSummary(data.ports);
+            renderFirmwareChip();
+            if (currentModalPort) updateModalChart();
+        }
+
+        function updateSummary(ports) {
+            let totalPower = 0, activeCount = 0, maxV = 0;
+            for (const [id, port] of Object.entries(ports || {})) {
+                if ((port.current > 0 || port.power > 0) && port.enabled !== false) {
+                    totalPower += port.power;
+                    activeCount++;
+                    maxV = Math.max(maxV, port.voltage);
+                }
+            }
+            document.getElementById('totalPower').textContent = totalPower.toFixed(1);
+            // 功率占比条：与 phone.html 的 mini-chart 同款——近 30 次采样的总功率，
+            // 每根柱的高度是该次功率占这段时间峰值的比例
+            if (!updateSummary._hist) updateSummary._hist = [];
+            if (totalPower > 0 || updateSummary._hist.length > 0) {
+                updateSummary._hist.push(totalPower);
+                if (updateSummary._hist.length > 30) updateSummary._hist.shift();
+            }
+            renderPortShare(ports, totalPower);
+            const chart = document.getElementById('miniChart');
+            if (chart) {
+                const maxVal = Math.max(1, ...updateSummary._hist);
+                chart.innerHTML = updateSummary._hist.map(v =>
+                    `<div class="mini-bar" style="height:${Math.max(2, (v / maxVal) * 100)}%;opacity:${v > 0 ? 1 : 0.3}"></div>`
+                ).join('');
+            }
+        }
+
+        // ── Incremental port DOM update (no innerHTML rebuild) ──
+        function updatePortDOM(portId, portData) {
+            const key = String(portId);
+            // Merge with existing data to preserve fields not in SSE event
+            dev.ports[key] = { ...(dev.ports[key] || {}), ...portData };
+            const card = document.getElementById(`port-${portId}`);
+            if (!card) return renderPorts(dev.ports);
+            const merged = dev.ports[key];
+            // 大读数 + 负载条 + V/A 行直接改文本，不重建卡片
+            const pw = card.querySelector('.port-power-value');
+            if (pw) pw.textContent = merged.power.toFixed(1);
+            const charging = merged.power > 0;
+            const fill = card.querySelector('.port-load-fill');
+            if (fill) fill.style.width = loadPct(merged.power, Number(portId)) + '%';
+            // 空载时连轨道一起淡掉：留着一条满宽灰槽看着像"进度卡在 0%"，与"这个口没插东西"不符
+            const track = card.querySelector('.port-load');
+            if (track) track.classList.toggle('is-idle', !charging);
+            card.classList.toggle('is-charging', charging);
+            const va = card.querySelector('.port-va');
+            if (va) va.textContent = `${merged.voltage.toFixed(1)}V · ${merged.current.toFixed(1)}A`;
+            // 协议徽标文字 + 选中态
+            const protoEl = card.querySelector('.port-protocol');
+            if (protoEl) {
+                protoEl.textContent = merged.protocol;
+                protoEl.classList.toggle('is-active', merged.protocol !== 'idle');
+            }
+            // Update active class (enabled comes from PIID 16, not BLE data)
+            card.classList.toggle('active', merged.enabled !== false);
+            // Update toggle checkbox
+            const toggle = document.getElementById(`toggle-${PORT_KEY_MAP[portId]}`);
+            if (toggle) toggle.checked = merged.enabled !== false;
+            // 端口图标也有 on/off 两版，跟着开关一起换
+            const icon = document.getElementById(`portIcon${PORT_KEY_MAP[portId].toUpperCase()}`);
+            if (icon) icon.src = `/static/plugin_imgs/main_card_port_${PORT_KEY_MAP[portId]}_${merged.enabled !== false ? 'on' : 'off'}.png`;
+            // Update summary totals
+            updateSummary(dev.ports);
+            // Update modal if open for this port
+            if (String(currentModalPort) === key) updateModalChart();
+        }
+
+        function updateStatusBadge(connected, authenticated) {
+            const badge = document.getElementById('statusBadge');
+            const state = (connected && authenticated) ? 'connected'
+                : dev.bleEnabling ? 'connecting' : 'disconnected';
+            badge.className = 'status-badge ' + state;
+        }
+
+        function updateBleButton() {
+            const btn = document.getElementById('bleToggle');
+            if (!btn) return;
+            if (dev.bleConnected) dev.bleEnabling = false;
+            if (dev.bleConnected) {
+                btn.textContent = I18N.t('common.disconnect');
+                btn.dataset.state = 'disconnect';
+                btn.className = 'btn btn-danger';
+            } else if (dev.bleEnabling) {
+                // 连接中再点一次 = 取消（停止扫描/重连）
+                btn.textContent = I18N.t('common.connectingDots');
+                btn.dataset.state = 'disconnect';
+                btn.className = 'btn btn-primary';
+            } else {
+                btn.textContent = I18N.t('common.connect');
+                btn.dataset.state = 'connect';
+                btn.className = 'btn btn-primary';
+            }
+        }
+
+        function renderPorts(ports) {
+            const grid = document.getElementById('portGrid');
+            // Save current toggle states during recent-change window
+            const savedChecks = {};
+            if (isRecent()) {
+                for (const [id] of Object.entries(PORT_MAP)) {
+                    const key = PORT_KEY_MAP[id];
+                    const t = document.getElementById(`toggle-${key}`);
+                    if (t) savedChecks[key] = t.checked;
+                }
+            }
+            let html = '';
+            for (const [id, name] of Object.entries(PORT_MAP)) {
+                const port = ports[id] || { voltage: 0, current: 0, power: 0, enabled: false, protocol: 'idle' };
+                const key = PORT_KEY_MAP[id];
+                const checked = (isRecent() && savedChecks.hasOwnProperty(key)) ? savedChecks[key] : port.enabled;
+                const pct = loadPct(port.power, id);
+                // 负载条的分母是本口上限（见 PORT_MAX_W），不是实时功率的比例——
+                // 必须写在提示里，否则"22W 只填了 18%"看起来像 bug。
+                const basis = I18N.t('index.loadBasis', { max: PORT_MAX_W[id] || 100 });
+                html += `
+                    <div class="port-card ${checked ? 'active' : ''}${port.power > 0 ? ' is-charging' : ''}" id="port-${id}" onclick="handlePortClick(event, ${id})">
+                        <div class="port-header">
+                            <span class="port-name ${key}">
+                                <span class="port-icon"><img id="portIcon${key.toUpperCase()}" src="/static/plugin_imgs/main_card_port_${key}_${checked ? 'on' : 'off'}.png" alt=""></span>
+                                ${name}
+                            </span>
+                            <label class="port-toggle" onclick="event.stopPropagation()">
+                                <input type="checkbox" id="toggle-${key}" ${checked ? 'checked' : ''} onchange="togglePort('${key}', this.checked)">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        <div class="port-power" title="${basis}">
+                            <span class="port-power-value">${port.power.toFixed(1)}</span><span class="port-power-unit">W</span>
+                        </div>
+                        <div class="port-load${pct ? '' : ' is-idle'}" title="${basis}"><div class="port-load-fill" data-port="${id}" style="width:${pct}%"></div></div>
+                        <div class="port-sub">
+                            <span class="port-va">${port.voltage.toFixed(1)}V · ${port.current.toFixed(1)}A</span>
+                            <span class="port-protocol">${port.protocol}</span>
+                        </div>
+                    </div>`;
+            }
+            grid.innerHTML = html;
+        }
+
+        function handlePortClick(event, portId) {
+            if (event.target.closest('.port-toggle')) return;
+            openModal(portId);
+        }
+
+        function buildSettingsHtml(settings) {
+            let html = '';
+            SETTINGS_CONFIG.forEach(s => {
+                const val = settings[String(s.piid)] ?? s.options[0].value;
+                const name = I18N.t(s.nameKey);
+                const opts = s.options.map(o => `<option value="${o.value}" ${o.value === val ? 'selected' : ''}>${o.labelKey ? I18N.t(o.labelKey) : o.label}</option>`).join('');
+                html += `<div class="setting-item"><span class="setting-label">${name}</span><select class="setting-select" onchange="setSetting(${s.piid}, parseInt(this.value))">${opts}</select></div>`;
+            });
+            return html;
+        }
+
+        function updateSettingsUI(settings) {
+            const grid = document.getElementById('settingsGrid');
+            if (!settingsRendered) {
+                grid.innerHTML = buildSettingsHtml(settings);
+                settingsRendered = true;
+            } else {
+                SETTINGS_CONFIG.forEach(s => {
+                    const select = grid.querySelector(`select[onchange*="${s.piid}"]`);
+                    if (select && !isRecent()) { const newVal = settings[String(s.piid)] ?? s.options[0].value; if (select.value != newVal) select.value = newVal; }
+                });
+            }
+            dev.settings = settings;
+        }
+
+        async function togglePort(port, on) {
+            markLocal();
+            const toggle = document.getElementById(`toggle-${port}`);
+            if (toggle) toggle.disabled = true;
+            try {
+                const res = await api('/api/port', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ port, action: on ? 'on' : 'off' }) });
+                const result = await res.json();
+                if (!result.ok) {
+                    if (toggle) toggle.checked = !on;
+                }
+            } catch (e) {
+                console.error('Port toggle error:', e);
+                if (toggle) toggle.checked = !on;
+            } finally {
+                if (toggle) toggle.disabled = false;
+                // SSE port_update will update UI automatically
+            }
+        }
+
+        async function setSetting(piid, value) {
+            markLocal();
+            try { await api('/api/set', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ piid, value }) }); } catch (e) { console.error('Set setting error:', e); }
+        }
+
+        let countdownRendered = false;
+
+        function renderCountdown(settings) {
+            const grid = document.getElementById('countdownGrid');
+            if (!countdownRendered) {
+                let html = '';
+                for (const [id, name] of Object.entries(PORT_MAP)) {
+                    const key = PORT_KEY_MAP[id];
+                    html += `
+                        <div class="countdown-item">
+                            <div class="countdown-header">
+                                <span class="countdown-port ${key}">${name}</span>
+                                <span class="countdown-current" id="countdown-status-${key}">${I18N.t('common.notSet')}</span>
+                            </div>
+                            <div class="countdown-input-group">
+                                <input type="number" class="countdown-input is-short" id="countdown-h-${key}" min="0" max="24" placeholder="0">
+                                <span class="countdown-unit">${I18N.t('countdown.hourUnit')}</span>
+                                <input type="number" class="countdown-input is-short" id="countdown-m-${key}" min="0" max="59" placeholder="0">
+                                <span class="countdown-unit">${I18N.t('countdown.minuteUnit')}</span>
+                            </div>
+                            <div class="countdown-quick">
+                                ${Countdown.QUICK_MINUTES.map(m => `<button class="countdown-quick-btn" onclick="setCountdown('${key}', ${m})">${Countdown.quickLabel(m)}</button>`).join('')}
+                            </div>
+                            <div class="countdown-actions">
+                                <button class="countdown-toggle-btn set" id="countdown-btn-${key}" onclick="handleCountdownAction('${key}')">${I18N.t('common.set')}</button>
+                            </div>
+                        </div>`;
+                }
+                grid.innerHTML = html;
+                countdownRendered = true;
+            }
+            for (const id of Object.keys(PORT_MAP)) {
+                const key = PORT_KEY_MAP[id];
+                const currentVal = settings[String(Countdown.PIIDS[key])] || 0;
+                const statusEl = document.getElementById(`countdown-status-${key}`);
+                if (statusEl) statusEl.textContent = Countdown.format(currentVal);
+                const btn = document.getElementById(`countdown-btn-${key}`);
+                if (btn && !btn.disabled) {
+                    if (currentVal > 0) {
+                        btn.textContent = I18N.t('common.clear');
+                        btn.className = 'countdown-toggle-btn clear';
+                    } else {
+                        btn.textContent = I18N.t('common.set');
+                        btn.className = 'countdown-toggle-btn set';
+                    }
+                }
+            }
+        }
+
+        const countdownPending = {};
+
+        async function setCountdown(port, minutes) {
+            if (countdownPending[port]) return;
+            countdownPending[port] = true;
+            markLocal();
+            const btn = document.getElementById(`countdown-btn-${port}`);
+            const statusEl = document.getElementById(`countdown-status-${port}`);
+            const isClear = minutes === 0;
+            if (btn) { btn.disabled = true; btn.textContent = isClear ? I18N.t('common.clearing') : I18N.t('common.setting'); }
+            const piid = Countdown.PIIDS[port];
+            if (!piid) { countdownPending[port] = false; if (btn) { btn.disabled = false; } return; }
+            try {
+                const res = await api('/api/set', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ piid, value: minutes }) });
+                const data = await res.json().catch(() => ({}));
+                countdownPending[port] = false;
+                if (!data.ok) {
+                    if (btn) btn.disabled = false;
+                    showToast(I18N.t('common.setFailed', { msg: data.error || I18N.t('common.unknownError') }));
+                    renderCountdown(dev.settings || {});
+                    return;
+                }
+                if (statusEl) statusEl.textContent = Countdown.format(minutes);
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = minutes > 0 ? I18N.t('common.clear') : I18N.t('common.set');
+                    btn.className = `countdown-toggle-btn ${minutes > 0 ? 'clear' : 'set'}`;
+                }
+            } catch (e) {
+                console.error('Set countdown error:', e);
+                countdownPending[port] = false;
+                if (btn) btn.disabled = false;
+                renderCountdown(dev.settings || {});
+            }
+        }
+
+        function handleCountdownAction(port) {
+            const btn = document.getElementById(`countdown-btn-${port}`);
+            if (btn && btn.classList.contains('clear')) {
+                setCountdown(port, 0);
+                return;
+            }
+            const minutes = Countdown.toMinutes(
+                document.getElementById(`countdown-h-${port}`).value,
+                document.getElementById(`countdown-m-${port}`).value);
+            if (minutes > 0) setCountdown(port, minutes);
+        }
+
+        async function bleToggle() {
+            const btn = document.getElementById('bleToggle');
+            if (btn.disabled) return;
+            btn.disabled = true;
+            const enable = btn.dataset.state === 'connect';
+            if (!enable) btn.textContent = I18N.t('common.disconnecting');
+            try {
+                await api('/api/enable', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: enable }) });
+                dev.bleEnabling = enable;
+                // 断开请求在蓝牙真正断开后才返回，立即同步一次，不必等 SSE
+                if (!enable) await fetchStatus();
+            } catch (e) { console.error('BLE toggle error:', e); }
+            finally {
+                btn.disabled = false;
+                updateStatusBadge(dev.connected, dev.authenticated);
+                updateBleButton();
+            }
+        }
+
+        // Set initial active button
+        // 存的分钟数可能在本页没有对应按钮（旧版嵌入页存过 90 分档，localStorage
+        // 是同源的）：落不到任何按钮上就退回 60 分，否则会出现
+        // "图表按 90 分取数、但没有任何按钮是选中态"的怪状态。
+        (function initTimeRangeButtons() {
+            const savedMinutes = parseInt(localStorage.getItem('cuktech-chart-hours') || '60', 10);
+            const buttons = [...document.querySelectorAll('.time-btn')]
+                .map(btn => parseInt(btn.dataset.minutes, 10)).filter(n => !isNaN(n));
+            const minutes = buttons.indexOf(savedMinutes) >= 0 ? savedMinutes : 60;
+            if (minutes !== savedMinutes) localStorage.setItem('cuktech-chart-hours', String(minutes));
+            setCurrentHours(minutes / 60);
+            document.querySelectorAll('.time-btn').forEach(btn => {
+                const btnMinutes = parseInt(btn.dataset.minutes, 10);
+                if (!isNaN(btnMinutes)) btn.classList.toggle('active', btnMinutes === minutes);
+            });
+        })();
+
+        function initApp() {
+            // 分步独立执行：任何一步抛错都不该让后面的步骤全部不跑。
+            // 这里踩过一次：一个 ReferenceError 直接跳到 catch，refreshChargeLimit()
+            // 没执行 → 前端永远不知道哪个口是常供（开关一直显示关闭、点了像没反应），
+            // 而且只有 console 里有一行错误，界面看着"就是坏了"。
+            var failed = [];
+            function step(name, fn) {
+                try { fn(); } catch (e) { failed.push(name); console.error('Init step failed:', name, e); }
+            }
+            step('initChart', initChart);
+            step('fetchChartData', fetchChartData);
+            step('initSSE', initSSE);
+            step('renderChargeLimit', renderChargeLimit);
+            step('refreshChargeLimit', refreshChargeLimit);
+            step('initSegmentedControls', initSegmentedControls);
+            step('initEnergyCard', initEnergyCard);
+            // 限额/端口模式（常供、充满即停）的提示条与共享模块打通
+            step('chargeLimitWiring', function () {
+                if (typeof ChargeLimit !== 'undefined' && ChargeLimit.setNotifier) {
+                    ChargeLimit.setNotifier(showToast);
+                    // "充满即停"点击时用的模式 = 卡面上那个 once/always 下拉
+                    ChargeLimit.setModeReader((port) => {
+                        const el = document.getElementById(`limit-mode-${port}`);
+                        return el ? el.value : null;
+                    });
+                }
+            });
+            // 限额进度（本会话已充 Wh）不在 /api/status 里，独立轮询刷新
+            step('refreshTimer', function () { setInterval(refreshChargeLimit, 5000); });
+            // 安全兜底：每 30s 轮询 /api/status 校正因 SSE 队列丢事件导致的连接状态偏差
+            step('statusTimer', function () {
+                setInterval(async () => {
+                    // 与 fetchStatus 同样的归属守卫：慢响应不能写进别人的桶
+                    const wanted = DeviceStore.current();
+                    try {
+                        const res = await api('/api/status');
+                        const data = await res.json();
+                        if (DeviceStore.current() !== wanted) return;
+                        const realConn = data.connected && data.authenticated;
+                        if (realConn !== dev.bleConnected) {
+                            updateUI(data);
+                        }
+                    } catch (e) {}
+                }, 30000);
+            });
+            if (failed.length) {
+                // 别静默：局部初始化失败意味着界面某些部分不工作，得让用户知道可以刷新
+                console.error('Init incomplete, failed steps:', failed.join(', '));
+                try { showToast(I18N.t('common.initPartial')); } catch (e) {}
+                try { pollStatus(); } catch (e) {}
+            }
+        }
+
+        // 用电统计卡：恢复上次看的 tab，先拉一次数据，之后按分钟级慢轮询
+        // （会话结束由 SSE 立即触发，见下面的 sse-session-end 监听）
+        function initEnergyCard() {
+            let saved = 'ports';
+            try { saved = localStorage.getItem('cuktech-energy-tab') || 'ports'; } catch (e) {}
+            setEnergyTab(ENERGY_TABS.indexOf(saved) >= 0 ? saved : 'ports');
+            refreshEnergyCard(energyPeriod);
+            setInterval(() => refreshEnergyCard(), 60000);
+            window.addEventListener('sse-session-end', (e) => {
+                // 别的设备结束了会话，与当前设备的用电统计无关（§3.12 按 device 过滤）；
+                // 不过滤就会每小时多刷几十次无用请求，且看起来像"数据串了"。
+                const devId = (e && e.detail && e.detail.device) || DeviceStore.PRIMARY;
+                if (devId !== DeviceStore.current()) return;
+                refreshEnergyCard();
+            });
+            // 换设备 = 换一整套用电数据：不立刻重拉的话，卡片会继续显示上一台的数字
+            DeviceStore.onChange(() => refreshEnergyCard(energyPeriod));
+        }
+
+        // ── SSE (Server-Sent Events) — replaces 2s polling ──
+        let evtSource = null;
+        let sseChartTimer = null;
+
+        // Fallback polling — used when SSE init fails
+        async function pollStatus() {
+            await fetchStatus();
+            setTimeout(pollStatus, 2000);
+        }
+
+        function initSSE() {
+            if (evtSource) { evtSource.close(); evtSource = null; }
+            evtSource = new EventSource(`${API_BASE}/api/events`);
+            evtSource.onopen = () => {
+                console.log('SSE connected');
+                document.getElementById('statusBadge').className = 'status-badge connected';
+                // SSE init event handles state sync; no fetchStatus needed
+            };
+            evtSource.onmessage = (e) => {
+                try {
+                    const msg = JSON.parse(e.data);
+                    // 多设备分发（§3.12）：每条事件先按 device 落进各自的桶；
+                    // 非当前设备到此为止——只留快照，不动 DOM。缺 device 字段按
+                    // primary 处理（旧服务端 / 单设备模式 / 浏览器缓存的旧 JS）。
+                    if (!DeviceStore.dispatch(msg)) return;
+                    switch (msg.type) {
+                        case 'init':
+                            updateUI(msg);
+                            break;
+                        case 'port_update':
+                            _accumulateRealTimeData(msg.port_id, msg.data);
+                            updatePortDOM(msg.port_id, msg.data);
+                            updateDeviceContainer(dev.ports);
+                            break;
+                        case 'status':
+                            dev.bleConnected = msg.connected && msg.authenticated;
+                            dev.ports = dev.ports || {};
+                            updateStatusBadge(msg.connected, msg.authenticated);
+                            updateBleButton();
+                            renderFirmwareChip();
+                            if (!dev.bleConnected) {
+                                // Disconnect: clear port data
+                                for (const id of Object.keys(PORT_MAP)) {
+                                    dev.ports[id] = { voltage: 0, current: 0, power: 0, active: false, protocol: 'idle', enabled: true };
+                                }
+                                renderPorts(dev.ports);
+                                updateDeviceContainer(dev.ports);
+                                updateSummary(dev.ports);
+                            } else if (msg.ports) {
+                                // Reconnect: apply full state
+                                dev.ports = msg.ports;
+                                renderPorts(msg.ports);
+                                updateDeviceContainer(msg.ports);
+                                updateSummary(msg.ports);
+                            }
+                            if (msg.settings) {
+                                updateSettingsUI(msg.settings);
+                                renderCountdown(msg.settings);
+                            }
+                            if (msg.protocol_switches) dev.protocolSwitches = msg.protocol_switches;
+                            if (msg.protocol_extend !== undefined) dev.protocolExtend = msg.protocol_extend;
+                            break;
+                        case 'settings':
+                            if (msg.settings) {
+                                updateSettingsUI(msg.settings);
+                                renderCountdown(msg.settings);
+                            }
+                            break;
+                        case 'protocol':
+                            if (msg.switches) dev.protocolSwitches = msg.switches;
+                            if (msg.protocol_extend !== undefined) dev.protocolExtend = msg.protocol_extend;
+                            if (currentModalPort) renderModalProtocols();
+                            break;
+                        case 'session_end':
+                            window.dispatchEvent(new CustomEvent('sse-session-end', { detail: msg }));
+                            break;
+                        case 'quality':
+                            renderQuality(msg);
+                            break;
+                    }
+                } catch (err) { console.error('SSE parse error:', err); }
+            };
+            evtSource.onerror = () => {
+                console.warn('SSE disconnected, will auto-reconnect');
+                document.getElementById('statusBadge').className = 'status-badge disconnected';
+            };
+            // bfcache: close on leave, reopen on return
+            window.addEventListener('pagehide', () => { if (evtSource) { evtSource.close(); evtSource = null; } });
+            window.addEventListener('pageshow', () => { if (!evtSource) initSSE(); });
+            // Chart refresh every 30s (decoupled from status)
+            sseChartTimer = setInterval(fetchChartData, 30000);
+        }
+
+        // 质量数据是每设备一份，存在设备桶里，换设备重放时整份还原
+        function renderQuality(q) {
+            dev.quality = q;
+            renderBleQuality(q.ble || {});
+        }
+        function formatDuration(sec) {
+            if (!sec) return '0s';
+            const h = Math.floor(sec / 3600);
+            const m = Math.floor((sec % 3600) / 60);
+            const s = sec % 60;
+            return h > 0 ? `${h}h${m}m` : m > 0 ? `${m}m${s}s` : `${s}s`;
+        }
+        function scoreColor(score) {
+            return score >= 80 ? 'var(--success)' : score >= 50 ? 'var(--warning)' : 'var(--danger)';
+        }
+        function qualityBar(score) {
+            const c = scoreColor(score);
+            return `<div class="quality-bar"><div class="quality-bar-fill" style="width:${score}%;background:${c}"></div></div>`;
+        }
+        function renderBleQuality(ble) {
+            const el = document.getElementById('qualityTooltip');
+            if (!el) return;
+            const uptimeText = ble.uptime > 0 ? formatDuration(ble.uptime) : I18N.t('quality.notConnected');
+            const lastPushText = ble.last_push_age != null ? I18N.t('quality.secondsAgo', { count: ble.last_push_age }) : I18N.t('quality.none');
+            const pushColor = ble.last_push_age != null && ble.last_push_age > 10 ? 'color:var(--warning)' : '';
+            const delayText = ble.next_reconnect_delay != null ? I18N.t('quality.secondsLater', { count: Math.round(ble.next_reconnect_delay) }) : null;
+            el.innerHTML = `<div style="font-weight:600;margin-bottom:2px;">BLE <span style="color:${scoreColor(ble.score)}">${ble.score}</span>/100</div>
+                ${qualityBar(ble.score)}
+                <div class="quality-row"><span class="quality-label">${I18N.t('quality.connectionDuration')}</span><span>${uptimeText}</span></div>
+                <div class="quality-row"><span class="quality-label">${I18N.t('quality.lastPush')}</span><span style="${pushColor}">${lastPushText}</span></div>
+                ${delayText ? `<div class="quality-row"><span class="quality-label">${I18N.t('quality.nextReconnect')}</span><span style="color:var(--warning)">${delayText}</span></div>` : ''}
+                <div class="quality-row"><span class="quality-label">${I18N.t('quality.decryptSuccess')}</span><span>${ble.decrypt}%</span></div>
+                <div class="quality-row"><span class="quality-label">${I18N.t('quality.notifyResponse')}</span><span>${ble.notify}%</span></div>
+                <div class="quality-row"><span class="quality-label">${I18N.t('quality.connectionStable')}</span><span>${ble.reconnect_score}%</span></div>
+                <div class="quality-row"><span class="quality-label">${I18N.t('quality.reconnect5m')}</span><span>${I18N.t('quality.times', { count: ble.reconnect_count_5m })}</span></div>`;
+        }
+        // Hover tooltip for each badge
+        function setupBadgeTooltip(badgeId, tooltipId) {
+            const badge = document.getElementById(badgeId);
+            const tooltip = document.getElementById(tooltipId);
+            if (!badge || !tooltip) return;
+            badge.addEventListener('mouseenter', (e) => {
+                if (dev.quality) {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    tooltip.style.left = rect.left + 'px';
+                    tooltip.style.top = (rect.bottom + 8) + 'px';
+                    tooltip.style.display = 'block';
+                }
+            });
+            badge.addEventListener('mouseleave', () => {
+                tooltip.style.display = 'none';
+            });
+        }
+        setupBadgeTooltip('statusBadge', 'qualityTooltip');
+        // Hide all tooltips on scroll or click outside
+        function hideAllTooltips() {
+            ['qualityTooltip'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.style.display = 'none';
+            });
+        }
+        document.addEventListener('scroll', hideAllTooltips, true);
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.status-badge')) hideAllTooltips();
+        });
+
+        function updateDeviceContainer(ports) {
+            const unconnected = document.getElementById('unconnectedImg');
+            const charger = document.getElementById('deviceChargerAnim');
+            const glow = document.getElementById('darkGlowAni');
+            const badge = document.getElementById('sceneBadgeAni');
+            if (!unconnected || !charger) return;
+
+            let totalW = 0;
+            for (const [id, port] of Object.entries(ports || {})) {
+                if (port.enabled !== false && port.power > 0) totalW += port.power;
+            }
+
+            const wrapInner = document.querySelector('.device-wrap-inner');
+
+            if (totalW > 0) {
+                unconnected.classList.remove('show');
+                if (wrapInner) wrapInner.classList.remove('idle');
+                charger.classList.add('charging');
+                glow.classList.add('active');
+                updateSceneBadge(true);
+
+                const portKeys = ['c1','c2','c3','a'];
+                for (const key of portKeys) {
+                    const p = ports[String(PORT_KEY_TO_ID[key])] || { voltage:0, current:0, power:0, enabled:false, protocol:'idle' };
+                    const mod = document.getElementById('usbMod' + key.toUpperCase());
+                    const pval = document.getElementById('usbPval' + key.toUpperCase());
+                    const active = p.enabled && p.power > 0;
+                    if (mod) mod.classList.toggle('active', active);
+                    if (pval) pval.textContent = active ? p.power.toFixed(1) + 'W' : '0W';
+                }
+            } else {
+                unconnected.classList.add('show');
+                if (wrapInner) wrapInner.classList.add('idle');
+                charger.classList.remove('charging');
+                glow.classList.remove('active');
+                ['c1','c2','c3','a'].forEach(k => {
+                    const m = document.getElementById('usbMod' + k.toUpperCase());
+                    if (m) m.classList.remove('active');
+                });
+                updateSceneBadge(false);
+            }
+        }
+
+        // Initialize if Chart.js is ready, otherwise wait for CDN fallback
+        if (typeof Chart !== 'undefined') {
+            initApp();
+        } else {
+            window.onChartReady = initApp;
+        }
+
+        // Charge History auto-refresh
+        // 15s（原来是 2s）：2s 一轮实测每 10 秒发 5 次 /api/energy/stats + 5 次 /api/sessions，
+        // 也就是 ≈7200 请求/小时/标签页，而且每轮整段重建 innerHTML —— 列表里的 hover、
+        // 键盘焦点、滚动位置都活不过 2 秒。会话结束有 SSE 会立即刷新，够用。
+        if (typeof startChargeHistoryAutoRefresh === 'function') {
+            startChargeHistoryAutoRefresh('chargeSessionList', 'chargeStats', 'today', 15000, 4);
+        }
+
+        // ── Locale change: re-render JS-built (dynamic) content ──
+        // Static DOM text is re-translated by I18N.applyTranslations() automatically.
+        function rerenderDynamic() {
+            updateBleButton();
+            renderPorts(dev.ports);
+            // 图例与用电统计都是 JS 拼出来的文案，语言切换后必须重画
+            // （图例原来漏了这一步：整页中文、只有图例一直是 "Total Power (W)"）
+            renderChartLegend();
+            renderEnergy();
+            initSegmentedControls();
+            if (settingsRendered) {
+                const sg = document.getElementById('settingsGrid');
+                if (sg) sg.innerHTML = buildSettingsHtml(dev.settings);
+            }
+            countdownRendered = false;
+            renderCountdown(dev.settings);
+            sceneRendered = false;
+            renderScene(dev.settings);
+            chargeLimitRendered = false;
+            renderChargeLimit();
+            const fwEl = document.getElementById('firmwareVersion');
+            if (fwEl && fwEl.dataset.firmware) fwEl.textContent = I18N.t('common.firmware', { version: fwEl.dataset.firmware });
+            // 切换器里的 aria-label 是 JS 拼的，切语言后要按新语言重建一次
+            DeviceStore.renderSwitcher();
+            if (currentModalPort) {
+                const rtBtn = document.getElementById('modalRealTimeBtn');
+                if (rtBtn) rtBtn.textContent = modalRealTimePort !== null ? I18N.t('modal.realtimeStop') : I18N.t('modal.realtime');
+                initModalChart();
+                updateModalChart();
+                renderModalProtocols();
+            }
+            if (dev.quality) renderQuality(dev.quality);
+        }
+        if (typeof I18N !== 'undefined' && typeof I18N.onChange === 'function') {
+            I18N.onChange(rerenderDynamic);
+        }
+
+        // ══════════════════════════════════════════════════════════
+        //  多设备工作台：切换条 + "全部设备"汇总（device-bench.js）
+        //
+        //  这里只提供三件事：怎么把一桶状态折成"仪表上的四个数"、怎么取今日用电、
+        //  以及选设备后的收尾。切换条的形状、排序、动效全在 bench 里——两页共用。
+        //  单设备时 bench 不生成任何 DOM，本段代码对改造前的行为零影响。
+        // ══════════════════════════════════════════════════════════
+        function benchSummary(b) {
+            const order = ['1', '2', '3', '4'];
+            const label = { 1: 'C1', 2: 'C2', 3: 'C3', 4: 'USB-A' };
+            let watts = 0;
+            const ports = order.map((id) => {
+                const p = (b.ports || {})[id] || {};
+                const w = Number(p.power) || 0;
+                if (p.active) watts += w;
+                return {
+                    key: PORT_KEY_MAP[id],
+                    label: label[id],
+                    active: !!p.active,
+                    power: w,
+                    enabled: p.enabled !== false,
+                    // 端口色与设备图上的光条同源，所以"哪口在充"不用读字
+                    color: `var(--port-${PORT_KEY_MAP[id]})`
+                };
+            });
+            return { online: !!(b.connected && b.authenticated), watts, ports };
+        }
+
+        // 今日用电按设备各取一次（汇总页才用；60s 内 bench 自己会缓存）
+        function benchFetchEnergy(id, done) {
+            const u = new URL('/api/device/' + encodeURIComponent(id) + '/energy/stats', API_BASE);
+            u.searchParams.set('period', 'today');
+            fetch(u)
+                .then((r) => r.json())
+                .then((d) => done(typeof d.total_wh === 'number' ? d.total_wh : null))
+                .catch(() => done(null));
+        }
+
+        // ?preview=multi：在只有一台充电器的机器上验收"点卡片整页切换"。
+        // 伪造设备的桶由这里灌（桶的形状是桌面页私有的），点卡片走的是真的
+        // store.switchDevice，请求由 store 拦掉。去掉参数即恢复。
+        const PREVIEW_SYNTH = {
+            pv1: { ports: { 2: { v: 20.1, a: 2.2, proto: 'PD' }, 3: { v: 9.0, a: 1.3, proto: 'QC3' } }, wh: 12.4 },
+            pv2: { ports: { 1: { v: 15.0, a: 1.2, proto: 'UFCS' } }, wh: 6.1 },
+            pv3: { ports: {}, wh: 0 }
+        };
+
+        function previewSeed(id, bucket) {
+            const spec = PREVIEW_SYNTH[id];
+            if (!bucket || !spec) return;
+            const base = DeviceStore.get('default') || {};
+            const basePorts = base.ports || {};
+            const baseWatts = Object.keys(basePorts)
+                .reduce((n, k) => n + (Number(basePorts[k].power) || 0), 0);
+            const online = id !== 'pv3';
+
+            bucket.connected = online;
+            bucket.authenticated = online;
+            bucket.bleConnected = online;
+            bucket.firmware = base.firmware || 'v1.0.0';
+            bucket.settings = Object.assign({}, base.settings || {});
+            bucket.protocolSwitches = Object.assign({}, base.protocolSwitches || {});
+            bucket.protocolExtend = base.protocolExtend || 0;
+            bucket.previewWh = spec.wh;
+            bucket.ports = {};
+            [1, 2, 3, 4].forEach((pid) => {
+                const live = basePorts[String(pid)] || {};
+                const synth = spec.ports[pid];
+                let power = 0, voltage = 0, current = 0, protocol = 'idle';
+                if (online) {
+                    if (baseWatts > 0) {
+                        // 真机在充电：按比例缩放，读数看着才"同源"（pv1 就是真机本体）
+                        power = Math.round((Number(live.power) || 0) * (id === 'pv1' ? 1 : 0.55) * 10) / 10;
+                        voltage = live.voltage || 0;
+                        current = live.current || 0;
+                        protocol = power > 0 ? (live.protocol || 'idle') : 'idle';
+                    } else if (synth) {
+                        // 真机空载：给固定读数，否则三张卡片全是 0W，看不出切换有没有生效
+                        voltage = synth.v; current = synth.a;
+                        power = Math.round(voltage * current * 10) / 10;
+                        protocol = synth.proto;
+                    }
+                }
+                bucket.ports[String(pid)] = {
+                    voltage, current, power,
+                    active: power > 0,
+                    enabled: online,
+                    protocol
+                };
+            });
+        }
+
+        if (typeof DeviceBench !== 'undefined') {
+            DeviceBench.init({
+                railId: 'deviceSwitcher',
+                preview: /[?&]preview=multi/.test(location.search),
+                previewSeed,
+                fleetId: 'fleetView',
+                summarise: benchSummary,
+                fetchEnergy: benchFetchEnergy,
+                // 选中设备后：单设备视图重放由 DeviceStore 自己触发，
+                // 这里只把图表拉回该设备（切设备时 replay 已经拉过一次，避免重复请求）
+                onPick: () => { DeviceStore.renderSwitcher(); }
+            });
+        }
